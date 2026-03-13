@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.DS_Store
+.claude/
+
+# Test outputs
+*_reconstructed.png
+*_comparison.png
+*.swg
+test_photo.png
+
+# Research papers (copyrighted)
+*.pdf
