@@ -264,8 +264,8 @@ function encodeIndices(indices, totalPixels) {
     deltaSize = 4 + deltas.length * 4;
   }
 
-  // Choose smaller encoding
-  if (bitmapSize < deltaSize && sorted.length > 100) {
+  // Choose smaller encoding (bitmap wins on ties, matching Python behavior)
+  if (bitmapSize <= deltaSize) {
     // Bitmap mode
     const bitmap = new Uint8Array(bitmapSize);
     for (const idx of sorted) {
@@ -617,7 +617,13 @@ function hideProgress() {
 }
 
 function setInfo(parts) {
-  $('info-panel').innerHTML = parts.map(p => `<span>${p}</span>`).join('');
+  const panel = $('info-panel');
+  panel.textContent = '';
+  for (const part of parts) {
+    const span = document.createElement('span');
+    span.textContent = part;
+    panel.appendChild(span);
+  }
 }
 
 function showWarning(msg) {

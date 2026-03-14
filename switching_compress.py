@@ -16,6 +16,7 @@ import os
 import struct
 import time
 import zlib
+from typing import Optional, Tuple
 
 import numpy as np
 from PIL import Image
@@ -234,11 +235,9 @@ def _encode_indices_auto(sorted_indices: np.ndarray, total_pixels: int) -> tuple
     nnz = len(sorted_indices)
     bitmap_size = (total_pixels + 7) // 8
 
-    # Estimate delta size without computing it
     if nnz <= 1:
         return _encode_indices_delta(sorted_indices)
-    max_delta = int(sorted_indices[-1] - sorted_indices[0]) // max(nnz - 1, 1)
-    # Worst case: max delta determines dtype
+    # Compute max delta to determine the delta-encoding dtype and size estimate
     actual_max = int(np.diff(sorted_indices).max())
     if actual_max <= 255:
         delta_est = 4 + nnz - 1
@@ -362,9 +361,19 @@ def _auto_tune_ratio(M: np.ndarray, target_psnr: float, layers: int,
 
 def compress(image_path: str, output_path: str, layers: int = 6,
              dct_ratio: float = 0.30, max_iter: int = 7,
-             target_psnr: float = None, adaptive: bool = True,
-             quiet: bool = False):
-    """Compress an image to .swg (SWG3) format."""
+             target_psnr: Optional[float] = None, adaptive: bool = True,
+             quiet: bool = False) -> int:
+    """Compress an image to .swg (SWG3) format.
+
+    Returns the compressed file size in bytes.
+    """
+    if layers < 1:
+        raise ValueError(f"layers must be >= 1, got {layers}")
+    if max_iter < 1:
+        raise ValueError(f"max_iter must be >= 1, got {max_iter}")
+    if not (0 < dct_ratio <= 1.0):
+        raise ValueError(f"dct_ratio must be in (0, 1], got {dct_ratio}")
+
     img = Image.open(image_path).convert("RGB")
     M_full = np.array(img, dtype=np.float64)
     n, k, channels = M_full.shape
@@ -455,7 +464,7 @@ def compress(image_path: str, output_path: str, layers: int = 6,
     return comp_size
 
 
-def decompress(swg_path: str, output_path: str, quiet: bool = False):
+def decompress(swg_path: str, output_path: str, quiet: bool = False) -> None:
     """Decompress a .swg (SWG3) file to an image."""
     log = print if not quiet else lambda *a, **kw: None
     with open(swg_path, "rb") as f:
@@ -535,8 +544,13 @@ def _compress_and_measure(image_path: str, swg_path: str, recon_path: str,
 
 
 def evaluate(image_path: str, layers: int = 6, dct_ratio: float = 0.30,
-             max_iter: int = 7, output_dir: str = ".", target_psnr: float = None):
-    """Compress, decompress, and evaluate quality."""
+             max_iter: int = 7, output_dir: str = ".",
+             target_psnr: Optional[float] = None) -> Tuple[float, float]:
+    """Compress, decompress, and evaluate quality.
+
+    Returns:
+        A (psnr, ssim) tuple of quality metrics.
+    """
     from skimage.metrics import structural_similarity as ssim
 
     base = os.path.splitext(os.path.basename(image_path))[0]
@@ -628,7 +642,8 @@ def sweep(image_path: str, layers: int = 6, max_iter: int = 7,
 
 # ─── Test photo generator ────────────────────────────────────────────
 
-def generate_test_photo(output_path: str, width: int = 512, height: int = None):
+def generate_test_photo(output_path: str, width: int = 512,
+                        height: Optional[int] = None) -> str:
     """Generate a synthetic photo-like test image (gradient + noise + shapes)."""
     if height is None:
         height = width
