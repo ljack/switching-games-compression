@@ -1,15 +1,8 @@
 // gpu-compress.js — GPU-accelerated compression: forward DCT, top-k selection, ALS solver
 // Uses FFTEngine from gpu-fft.js for O(N log N) DCT/IDCT.
 
+import { WG, dims } from './gpu-utils.js';
 import { FFTEngine } from './gpu-fft.js';
-
-const WG = 256;
-
-function dims(total) {
-  const g = Math.ceil(total / WG);
-  if (g <= 65535) return [g, 1, 1];
-  return [65535, Math.ceil(g / 65535), 1];
-}
 
 // ─── Compression Shaders ──────────────────────────────────────────────
 
@@ -425,6 +418,31 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
   }
 }`;
 
+// Final reduction: max of an array (writes result in-place to data[0])
+const REDUCE_MAX = /* wgsl */`
+struct P { count: u32 }
+@group(0) @binding(0) var<uniform> p: P;
+@group(0) @binding(1) var<storage, read_write> data: array<f32>;
+
+var<workgroup> wg_vals: array<f32, ${WG}>;
+
+@compute @workgroup_size(${WG})
+fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
+  var mx = 0.0;
+  for (var i = lid.x; i < p.count; i += ${WG}u) {
+    mx = max(mx, data[i]);
+  }
+  wg_vals[lid.x] = mx;
+  workgroupBarrier();
+
+  for (var s = ${WG / 2}u; s > 0u; s >>= 1u) {
+    if (lid.x < s) { wg_vals[lid.x] = max(wg_vals[lid.x], wg_vals[lid.x + s]); }
+    workgroupBarrier();
+  }
+
+  if (lid.x == 0u) { data[0] = wg_vals[0]; }
+}`;
+
 // L^T @ R outer product matmul (same as decoder but separate for compression pipeline)
 const MATMUL_LTR = /* wgsl */`
 struct P { n: u32, k: u32, layers: u32 }
@@ -479,6 +497,7 @@ export class GPUCompressor {
       batchSolve: mk(BATCH_SOLVE),
       computeResidual: mk(COMPUTE_RESIDUAL),
       reduceSum: mk(REDUCE_SUM),
+      reduceMax: mk(REDUCE_MAX),
       matmulLTR: mk(MATMUL_LTR),
     };
   }
@@ -601,12 +620,26 @@ export class GPUCompressor {
       this.device.queue.submit([enc.finish()]);
     }
 
-    // 2. Find max value (read back and scan — small cost vs GPU complexity)
-    const absData = new Float32Array((await this._readback(absBuf, total * 4)).buffer);
-    let maxVal = 0;
-    for (let i = 0; i < absData.length; i++) {
-      if (absData[i] > maxVal) maxVal = absData[i];
+    // 2. Find max value via GPU parallel reduction (avoids reading back entire array)
+    const maxBuf = this._createBuf(total * 4);
+    {
+      const enc = this.device.createCommandEncoder();
+      enc.copyBufferToBuffer(absBuf, 0, maxBuf, 0, total * 4);
+      this.device.queue.submit([enc.finish()]);
     }
+    const uMaxReduce = this._uniform(new Uint32Array([total]));
+    {
+      const enc = this.device.createCommandEncoder();
+      const p = enc.beginComputePass();
+      p.setPipeline(this.P.reduceMax);
+      p.setBindGroup(0, this._bg(this.P.reduceMax, [uMaxReduce, maxBuf]));
+      p.dispatchWorkgroups(1, 1, 1);
+      p.end();
+      this.device.queue.submit([enc.finish()]);
+    }
+    const maxVal = new Float32Array((await this._readback(maxBuf, 4)).buffer)[0];
+    maxBuf.destroy();
+    uMaxReduce.destroy();
 
     if (maxVal === 0 || targetNNZ >= total) {
       absBuf.destroy();
@@ -802,15 +835,9 @@ export class GPUCompressor {
     // Simplest: transpose C, then use ALS_GRAM with swapped dims
     // C is n×k, C^T is k×n
     const C_T = this._createBuf(total * 4);
-    const uTransNK = this._uniform(new Uint32Array([n, k]));
-    tmp.push(uTransNK);
     {
       const enc = this.device.createCommandEncoder();
-      const p = enc.beginComputePass();
-      p.setPipeline(this.fft.pipelines.transpose);
-      p.setBindGroup(0, this._bg(this.fft.pipelines.transpose, [uTransNK, C_buf, C_T]));
-      p.dispatchWorkgroups(...dims(total));
-      p.end();
+      this.fft.encodeTranspose(enc, n, k, C_buf, C_T, tmp);
       this.device.queue.submit([enc.finish()]);
     }
 
@@ -818,11 +845,7 @@ export class GPUCompressor {
     const M_T = this._createBuf(total * 4);
     {
       const enc = this.device.createCommandEncoder();
-      const p = enc.beginComputePass();
-      p.setPipeline(this.fft.pipelines.transpose);
-      p.setBindGroup(0, this._bg(this.fft.pipelines.transpose, [uTransNK, M_buf, M_T]));
-      p.dispatchWorkgroups(...dims(total));
-      p.end();
+      this.fft.encodeTranspose(enc, n, k, M_buf, M_T, tmp);
       this.device.queue.submit([enc.finish()]);
     }
 

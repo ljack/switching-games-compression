@@ -1,6 +1,6 @@
 # Task 16: GPU Parallel Reduction for selectTopK Max-Finding
 
-## Status: pending
+## Status: completed
 
 ## Description
 `selectTopK()` in gpu-compress.js reads back the entire absolute magnitude array to CPU

@@ -1,6 +1,6 @@
 # Task 17: Deduplicate TRANSPOSE Shader
 
-## Status: pending
+## Status: completed
 
 ## Description
 The TRANSPOSE WGSL shader is defined identically in two files:

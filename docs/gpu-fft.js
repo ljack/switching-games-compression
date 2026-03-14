@@ -11,32 +11,9 @@
 //   2. N-point complex IFFT of Y
 //   3. De-reorder: x[2m] = Re(y[m]) (m < N/2), x[2(N-m)-1] = Re(y[m]) (m >= N/2)
 
-const WG = 256;
-
-function dims(total) {
-  const g = Math.ceil(total / WG);
-  if (g <= 65535) return [g, 1, 1];
-  return [65535, Math.ceil(g / 65535), 1];
-}
+import { WG, dims, TRANSPOSE_SHADER } from './gpu-utils.js';
 
 // ─── Shaders ──────────────────────────────────────────────────────────
-
-// Transpose (reused from gpu.js but defined locally for modularity)
-const TRANSPOSE_SHADER = /* wgsl */`
-struct P { rows_in: u32, cols_in: u32 }
-@group(0) @binding(0) var<uniform> p: P;
-@group(0) @binding(1) var<storage, read> input: array<f32>;
-@group(0) @binding(2) var<storage, read_write> output: array<f32>;
-@compute @workgroup_size(${WG})
-fn main(@builtin(global_invocation_id) gid: vec3<u32>,
-        @builtin(num_workgroups) nwg: vec3<u32>) {
-  let idx = gid.y * (nwg.x * ${WG}u) + gid.x;
-  let total = p.rows_in * p.cols_in;
-  if (idx >= total) { return; }
-  let row = idx / p.cols_in;
-  let col = idx % p.cols_in;
-  output[col * p.rows_in + row] = input[idx];
-}`;
 
 // IDCT pre-twiddle: f32 DCT coefficients → vec2<f32> complex for IFFT
 // For each row of N elements, produce N complex values:

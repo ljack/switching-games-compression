@@ -1,6 +1,6 @@
 # Task 13: Extract Shared GPU Utilities Module
 
-## Status: pending
+## Status: completed
 
 ## Description
 `dims()`, `WG`, `_upload()`, `_uniform()`, `_bg()` are triplicated across gpu.js, gpu-fft.js, and gpu-compress.js. The TRANSPOSE shader is duplicated in gpu.js and gpu-fft.js. Extract into a shared `gpu-utils.js` module.
