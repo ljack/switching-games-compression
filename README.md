@@ -15,37 +15,17 @@ M ≈ Σ D_{2j-1} · C · D_{2j}
 
 where C is a DCT-thresholded initial image and D's are diagonal matrices found via alternating least-squares. The name comes from its resemblance to Berlekamp's switching game in continuous form.
 
-## Usage
+## Quick Start
 
 ```bash
 # Compress with auto-tuned quality (recommended)
 python3 switching_compress.py compress input.jpg output.swg --target-psnr 35
 
-# Compress with fixed DCT ratio
-python3 switching_compress.py compress input.jpg output.swg --dct-ratio 0.05
-
 # Decompress
 python3 switching_compress.py decompress output.swg reconstructed.png
-
-# Evaluate quality (compress + decompress + PSNR/SSIM metrics)
-python3 switching_compress.py evaluate input.jpg --target-psnr 35
-
-# Sweep ratios to see size-quality tradeoff
-python3 switching_compress.py sweep input.jpg
-
-# Generate synthetic test photo
-python3 switching_compress.py gen-photo test.png --width 512 --height 512
 ```
 
-## Key Parameters
-
-| Parameter | Default | Description |
-|---|---|---|
-| `--target-psnr` | — | Target quality in dB. Auto-tunes DCT ratio per channel. |
-| `--dct-ratio` | 0.30 | Fraction of DCT coefficients to keep (overridden by `--target-psnr`) |
-| `--layers` | 6 | Max diagonal layer pairs |
-| `--max-iter` | 7 | ALS iterations per layer solve |
-| `--no-adaptive` | off | Disable adaptive layer pruning |
+See [CLI Reference](CLI.md) for full documentation of all commands and options.
 
 ## File Format (SWG3)
 
