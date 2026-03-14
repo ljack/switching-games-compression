@@ -16,6 +16,7 @@ import os
 import struct
 import time
 import zlib
+from typing import Optional
 
 import numpy as np
 from PIL import Image
@@ -360,11 +361,33 @@ def _auto_tune_ratio(M: np.ndarray, target_psnr: float, layers: int,
 
 # ─── Compress / Decompress ───────────────────────────────────────────
 
+# Max decompressed payload size (256 MB) to prevent decompression bombs
+_MAX_DECOMP_SIZE = 256 * 1024 * 1024
+
+
+def _safe_decompress(data: bytes) -> bytes:
+    """Decompress zlib data with a size cap to prevent decompression bombs."""
+    dobj = zlib.decompressobj()
+    result = dobj.decompress(data, _MAX_DECOMP_SIZE + 1)
+    if dobj.unconsumed_tail or len(result) > _MAX_DECOMP_SIZE:
+        raise ValueError(
+            f"Decompressed payload exceeds {_MAX_DECOMP_SIZE} bytes — "
+            "possible decompression bomb"
+        )
+    return result
+
+
 def compress(image_path: str, output_path: str, layers: int = 6,
              dct_ratio: float = 0.30, max_iter: int = 7,
-             target_psnr: float = None, adaptive: bool = True,
-             quiet: bool = False):
+             target_psnr: Optional[float] = None, adaptive: bool = True,
+             quiet: bool = False) -> int:
     """Compress an image to .swg (SWG3) format."""
+    if layers < 1:
+        raise ValueError(f"layers must be >= 1, got {layers}")
+    if not (0.0 < dct_ratio <= 1.0):
+        raise ValueError(f"dct_ratio must be in (0, 1], got {dct_ratio}")
+    if max_iter < 1:
+        raise ValueError(f"max_iter must be >= 1, got {max_iter}")
     img = Image.open(image_path).convert("RGB")
     M_full = np.array(img, dtype=np.float64)
     n, k, channels = M_full.shape
@@ -455,7 +478,7 @@ def compress(image_path: str, output_path: str, layers: int = 6,
     return comp_size
 
 
-def decompress(swg_path: str, output_path: str, quiet: bool = False):
+def decompress(swg_path: str, output_path: str, quiet: bool = False) -> None:
     """Decompress a .swg (SWG3) file to an image."""
     log = print if not quiet else lambda *a, **kw: None
     with open(swg_path, "rb") as f:
@@ -472,7 +495,7 @@ def decompress(swg_path: str, output_path: str, quiet: bool = False):
         log(f"Image: {n}x{k}, {channels} channels, max_layers={layers}")
 
         compressed_size = struct.unpack("<I", f.read(4))[0]
-        raw = zlib.decompress(f.read(compressed_size))
+        raw = _safe_decompress(f.read(compressed_size))
 
     buf = io.BytesIO(raw)
     total_pixels = n * k

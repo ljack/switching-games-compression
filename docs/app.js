@@ -319,7 +319,7 @@ function encodeIndices(indices, totalPixels) {
   }
 
   // Choose smaller encoding
-  if (bitmapSize < deltaSize && sorted.length > 100) {
+  if (bitmapSize < deltaSize) {
     // Bitmap mode
     const bitmap = new Uint8Array(bitmapSize);
     for (const idx of sorted) {
@@ -671,7 +671,13 @@ function hideProgress() {
 }
 
 function setInfo(parts) {
-  $('info-panel').innerHTML = parts.map(p => `<span>${p}</span>`).join('');
+  const panel = $('info-panel');
+  panel.textContent = '';
+  for (const p of parts) {
+    const span = document.createElement('span');
+    span.textContent = p;
+    panel.appendChild(span);
+  }
 }
 
 function showWarning(msg) {
@@ -1260,17 +1266,31 @@ function setSourceFromCanvas(c, fileMeta) {
   const pixels = w * h;
   const rawSize = pixels * 3; // RGB uncompressed
   const infoEl = $('source-info');
-  let html = `<strong>${w} &times; ${h}</strong>`;
-  html += ` &nbsp;&middot;&nbsp; ${(pixels / 1000).toFixed(0)}K pixels`;
-  html += ` &nbsp;&middot;&nbsp; Raw: ${formatBytes(rawSize)}`;
+  infoEl.innerHTML = '';
+  const strong = document.createElement('strong');
+  strong.textContent = `${w} \u00d7 ${h}`;
+  infoEl.appendChild(strong);
+  infoEl.appendChild(document.createTextNode(` \u00a0\u00b7\u00a0 ${(pixels / 1000).toFixed(0)}K pixels`));
+  infoEl.appendChild(document.createTextNode(` \u00a0\u00b7\u00a0 Raw: ${formatBytes(rawSize)}`));
   if (fileMeta) {
-    if (fileMeta.fileSize) html += ` &nbsp;&middot;&nbsp; ${fileMeta.fileType?.split('/')[1]?.toUpperCase() || 'File'}: ${formatBytes(fileMeta.fileSize)}`;
-    if (fileMeta.fileName) html += ` &nbsp;&middot;&nbsp; ${fileMeta.fileName}`;
+    if (fileMeta.fileSize) {
+      const fileType = fileMeta.fileType?.split('/')[1]?.toUpperCase() || 'File';
+      infoEl.appendChild(document.createTextNode(` \u00a0\u00b7\u00a0 ${fileType}: ${formatBytes(fileMeta.fileSize)}`));
+    }
+    if (fileMeta.fileName) {
+      infoEl.appendChild(document.createTextNode(` \u00a0\u00b7\u00a0 `));
+      const nameSpan = document.createElement('span');
+      nameSpan.textContent = fileMeta.fileName;
+      infoEl.appendChild(nameSpan);
+    }
   }
   if (fitW !== origW || fitH !== origH) {
-    html += `<br><span style="color:var(--warn);">Resized from ${origW} &times; ${origH} for FFT compatibility</span>`;
+    infoEl.appendChild(document.createElement('br'));
+    const resizeNote = document.createElement('span');
+    resizeNote.style.color = 'var(--warn)';
+    resizeNote.textContent = `Resized from ${origW} \u00d7 ${origH} for FFT compatibility`;
+    infoEl.appendChild(resizeNote);
   }
-  infoEl.innerHTML = html;
   // Update estimated size hint
   const estRatio = 0.05;
   const estNnz = Math.round(w * h * estRatio);

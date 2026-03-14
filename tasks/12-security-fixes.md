@@ -1,6 +1,6 @@
 # Task 12: Security Fixes
 
-## Status: pending
+## Status: completed
 
 ## Description
 Combined security findings from Claude audit + GitHub Copilot review.
@@ -14,22 +14,14 @@ Some fixes already applied, others pending.
 5. **MEDIUM: compressedSize vs file size** — validated before slicing
 6. **MEDIUM: NaN/Infinity diagonals** — sanitized to 0
 
-## Pending (from Copilot PR #1)
+## Fixed (from Copilot PR — this session)
 7. **MEDIUM: XSS in setInfo()** — fileName injected via innerHTML. Fix: use textContent + DOM construction
-8. **LOW: Encoding consistency** — encodeIndices bitmap guard `sorted.length > 100` absent in Python. Remove guard.
-9. **LOW: Python input validation** — compress() should reject layers<1, ratio out of range, max_iter<1
-10. **LOW: Python type annotations** — Optional[float] for target_psnr, return types
+8. **LOW: Encoding consistency** — removed `sorted.length > 100` bitmap guard in JS encodeIndices() to match Python behaviour
+9. **LOW: Python input validation** — compress() now rejects layers<1, ratio out of range, max_iter<1
+10. **LOW: Python type annotations** — Optional[float] for target_psnr, return types added
+11. **MEDIUM: Python decompression bomb** — zlib.decompress() replaced with _safe_decompress() using max_length cap (256 MB)
+12. **LOW: Delta decode alignment** — existing use of data.slice(4) in decodeIndicesDelta already creates aligned copy; no change needed
 
-## Pending (not yet fixed)
-11. **MEDIUM: Python decompression bomb** — zlib.decompress() has no size limit. Need iterative decompression with cap.
-12. **LOW: Delta decode alignment** — Uint16Array from subarray could fail if implementation changes from slice to subarray
-
-## Plan
-- Apply fixes 7-8 from Copilot PR (cherry-pick or manual)
-- Apply fixes 9-10 to Python CLI
-- Add fix 11 to Python decompressor
-- Consider fix 12 (defensive)
-
-## Files
+## Files changed
 - docs/app.js (7, 8)
 - switching_compress.py (9, 10, 11)
