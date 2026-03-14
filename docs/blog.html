@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>When AI Writes Code You Can't Review — Jarkko Lietolahti</title>
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --surface: #141414;
+    --border: #222;
+    --text: #d8d8d8;
+    --text-dim: #888;
+    --accent: #4a9eff;
+    --code-bg: #1a1a2e;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    line-height: 1.7;
+    min-height: 100vh;
+  }
+  article {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 48px 24px 96px;
+  }
+  h1 {
+    font-size: 32px;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 16px;
+    color: #fff;
+  }
+  .meta {
+    color: var(--text-dim);
+    font-size: 14px;
+    margin-bottom: 40px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  .meta a { color: var(--accent); text-decoration: none; }
+  h2 {
+    font-size: 22px;
+    font-weight: 600;
+    margin: 40px 0 16px;
+    color: #eee;
+  }
+  h3 {
+    font-size: 17px;
+    font-weight: 600;
+    margin: 28px 0 12px;
+    color: #ddd;
+  }
+  p { margin-bottom: 16px; }
+  a { color: var(--accent); }
+  code {
+    background: var(--code-bg);
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 0.9em;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+  }
+  pre {
+    background: var(--code-bg);
+    padding: 16px 20px;
+    border-radius: 6px;
+    overflow-x: auto;
+    margin: 16px 0 24px;
+    font-size: 13px;
+    line-height: 1.5;
+    border: 1px solid var(--border);
+  }
+  pre code { background: none; padding: 0; }
+  blockquote {
+    border-left: 3px solid var(--accent);
+    padding: 12px 20px;
+    margin: 20px 0;
+    color: var(--text-dim);
+    font-style: italic;
+    background: var(--surface);
+    border-radius: 0 4px 4px 0;
+  }
+  .findings-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0 24px;
+    font-size: 14px;
+  }
+  .findings-table th, .findings-table td {
+    border: 1px solid var(--border);
+    padding: 8px 12px;
+    text-align: left;
+  }
+  .findings-table th { background: var(--surface); color: var(--text-dim); font-weight: 500; }
+  .crit { color: #ff4444; font-weight: 600; }
+  .high { color: #ff8800; font-weight: 600; }
+  .med { color: #ffcc00; }
+  .low { color: #88cc88; }
+  .stat-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 12px;
+    margin: 20px 0 28px;
+  }
+  .stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 16px;
+    text-align: center;
+  }
+  .stat-card .num { font-size: 28px; font-weight: 700; color: var(--accent); }
+  .stat-card .label { font-size: 12px; color: var(--text-dim); margin-top: 4px; }
+  .back-link {
+    display: inline-block;
+    margin-bottom: 24px;
+    color: var(--text-dim);
+    text-decoration: none;
+    font-size: 14px;
+  }
+  .back-link:hover { color: var(--accent); }
+  ul, ol { margin: 0 0 16px 24px; }
+  li { margin-bottom: 6px; }
+  .highlight {
+    background: linear-gradient(135deg, #1a1a3e 0%, #0a2a1a 100%);
+    border: 1px solid #2a3a2a;
+    border-radius: 8px;
+    padding: 20px 24px;
+    margin: 24px 0;
+  }
+</style>
+</head>
+<body>
+<article>
+<a href="index.html" class="back-link">&larr; Back to SWG3 Demo</a>
+
+<h1>When AI Writes Code You Can't Review</h1>
+
+<div class="meta">
+  Jarkko Lietolahti &middot; March 2025 &middot;
+  <a href="https://github.com/ljack/switching-games-compression">Source on GitHub</a> &middot;
+  <a href="index.html">Live Demo</a>
+</div>
+
+<p>
+There's a growing assumption in the AI discourse that humans should always be able to review and verify
+AI-generated code. That a developer should read every line, understand every algorithm, and sign off
+on every commit. I want to challenge that assumption with a concrete experiment.
+</p>
+
+<p>
+I took a research paper I don't fully understand, gave it to Claude as a specification, and asked it
+to build a working application. The result is a WebGPU-accelerated image compressor running in the
+browser &mdash; implementing mathematics that's beyond my ability to verify line by line. And yet,
+I'm confident the code works correctly. Here's why, and what this means for the future of software development.
+</p>
+
+<h2>The Experiment</h2>
+
+<p>
+The paper is <em>"Switching Games for Image Compression"</em> by Marko Huhtanen (IEEE Signal Processing
+Letters, 2025). It describes a compression technique using diagonal matrix scaling, alternating
+least-squares optimization, and 2D DCT transforms. The mathematical framework involves double
+orthogonality conditions, Cholesky decomposition of Gram matrices, and Stockham auto-sort FFT
+implementations.
+</p>
+
+<p>
+I can follow the paper's intuition: you start with a rough approximation of an image using DCT
+coefficients, then iteratively refine it by finding optimal "switches" (diagonal scaling matrices)
+from both sides. But the precise mathematics of the ALS solver, the FFT-based IDCT normalization
+factors, and the GPU shader implementations? Those are beyond what I can confidently review.
+</p>
+
+<p>
+The code Claude produced spans ~4,000 lines across 7 files:
+</p>
+
+<div class="stat-grid">
+  <div class="stat-card"><div class="num">~4K</div><div class="label">Lines of Code</div></div>
+  <div class="stat-card"><div class="num">7</div><div class="label">WGSL Compute Shaders</div></div>
+  <div class="stat-card"><div class="num">11</div><div class="label">Tasks Completed</div></div>
+  <div class="stat-card"><div class="num">3</div><div class="label">Critical Bugs Found &amp; Fixed</div></div>
+</div>
+
+<p>
+This includes WebGPU compute shaders in WGSL (a language I've never written), Stockham FFT
+with mixed radix-2/radix-3 stages, a Cholesky batch solver running on GPU, histogram-based
+top-k selection, and a complete binary file format encoder/decoder. Not exactly code you can
+skim and approve.
+</p>
+
+<h2>The Verification Problem</h2>
+
+<p>
+Traditional code review assumes the reviewer can evaluate correctness by reading. But several
+things make that impractical here:
+</p>
+
+<ol>
+  <li><strong>Domain expertise gap</strong> &mdash; The mathematics (Makhoul 1980 IDCT normalization,
+    Cholesky decomposition stability in f32) requires signal processing knowledge I don't have.</li>
+  <li><strong>Language unfamiliarity</strong> &mdash; WGSL compute shaders have unique semantics
+    (workgroup barriers, storage buffer access patterns) that aren't obvious from reading.</li>
+  <li><strong>System interactions</strong> &mdash; WebGPU buffer alignment, maxStorageBufferBindingSize
+    limits, and browser module caching created bugs that only manifest at runtime, not in code review.</li>
+  <li><strong>Scale</strong> &mdash; 4,000 lines of interconnected GPU code is a lot to hold in your
+    head, especially when one normalization constant being wrong breaks everything silently.</li>
+</ol>
+
+<h2>How I Built Confidence Anyway</h2>
+
+<p>
+If you can't review the code, how do you trust it? I used four complementary strategies:
+</p>
+
+<h3>1. Feature as Proof</h3>
+
+<p>
+The strongest evidence is that <strong>the application works</strong>. You can load an 8192&times;6144
+image, compress it to 38% of its original size, decompress it in 1 second on the GPU, and visually
+compare it with the original. The PSNR numbers match or exceed the Python reference implementation.
+The files round-trip correctly between browser and Python.
+</p>
+
+<p>
+This isn't a toy demo &mdash; the compression involves real linear algebra running on the GPU,
+and producing correct results is strong evidence that the underlying mathematics is implemented
+correctly. A wrong normalization factor doesn't produce a slightly degraded image; it produces
+garbage (as we discovered three times during development).
+</p>
+
+<h3>2. AI-Assisted Security Scanning</h3>
+
+<p>
+I asked Claude to perform an intensive security audit of the SWG3 binary parser. It found
+7 vulnerabilities:
+</p>
+
+<table class="findings-table">
+  <tr><th>Severity</th><th>Finding</th><th>Status</th></tr>
+  <tr><td class="crit">Critical</td><td>Zlib decompression bomb (no payload size limit)</td><td>Fixed</td></tr>
+  <tr><td class="crit">Critical</td><td>Out-of-bounds GPU write via unchecked scatter indices</td><td>Fixed</td></tr>
+  <tr><td class="high">High</td><td>Integer overflow in n&times;k pixel count (65536&sup2;)</td><td>Fixed</td></tr>
+  <tr><td class="high">High</td><td>Payload offset reads past end without bounds checking</td><td>Fixed</td></tr>
+  <tr><td class="med">Medium</td><td>compressedSize not validated against file size</td><td>Fixed</td></tr>
+  <tr><td class="med">Medium</td><td>NaN/Infinity in float16 diagonals propagate to GPU</td><td>Fixed</td></tr>
+  <tr><td class="low">Low</td><td>TypedArray alignment assumption in delta decoder</td><td>Documented</td></tr>
+</table>
+
+<h3>3. Cross-AI Review (GitHub Copilot)</h3>
+
+<p>
+I ran GitHub Copilot's code review on the repository. It found an additional
+<strong>XSS vulnerability</strong> that Claude's audit missed &mdash; the info panel was injecting
+user-supplied filenames via <code>innerHTML</code>. A file named
+<code>&lt;img src=x onerror=alert(1)&gt;.swg</code> would execute arbitrary JavaScript.
+</p>
+
+<p>
+Copilot also found encoding inconsistencies between the JavaScript and Python implementations,
+dead code, and missing type annotations. Using multiple AI reviewers catches different classes
+of issues &mdash; much like having multiple human reviewers with different expertise.
+</p>
+
+<h3>4. Automated Testing with Browser Automation</h3>
+
+<p>
+We used Playwright to run automated end-to-end tests:
+</p>
+
+<ul>
+  <li>DCT &harr; IDCT round-trip (max error &lt; 0.0001)</li>
+  <li>Compress &rarr; download &rarr; re-decode pixel identity (maxDiff = 0)</li>
+  <li>Browser &harr; Python round-trip compatibility (49 dB through f16 quantization)</li>
+  <li>WebGPU validation error monitoring (0 errors in final build)</li>
+  <li>Large image decode performance (8192&times;6144 in ~1 second)</li>
+</ul>
+
+<h2>What Broke Along the Way</h2>
+
+<p>
+The bugs we found are instructive about the kinds of errors AI-generated code contains:
+</p>
+
+<div class="highlight">
+<h3>IDCT Normalization (Makhoul 1980)</h3>
+<p>
+The FFT-based inverse DCT pre-twiddle was multiplying by N instead of dividing by N, and missing
+a factor-of-2 correction for AC terms. This is a subtle mathematical error &mdash; the kind
+that passes a cursory code review because the formula <em>looks</em> reasonable. The IDCT
+produced values 1000x too large, but the ALS solver compensated by producing correspondingly
+tiny diagonal matrices, masking the bug until we measured PSNR against the reference implementation.
+</p>
+</div>
+
+<div class="highlight">
+<h3>Cholesky Regularization</h3>
+<p>
+The batch Cholesky solver used fixed regularization of 1e-6, which was insufficient for Gram
+matrices with diagonal values in the tens of thousands (from squaring pixel values in range 0-255).
+After 2-3 ALS iterations, the solver produced NaN values that propagated through everything. The
+fix was to scale regularization proportionally to the diagonal magnitude.
+</p>
+</div>
+
+<div class="highlight">
+<h3>WebGPU Buffer Limits</h3>
+<p>
+The FFT needed 384MB complex buffers for 8192&times;6144 images, but
+<code>maxStorageBufferBindingSize</code> is typically 128MB (distinct from
+<code>maxBufferSize</code> of 256MB). This required implementing row-batched FFT processing
+with WebGPU bind group buffer offsets &mdash; a non-obvious solution that wouldn't be caught
+by code review alone.
+</p>
+</div>
+
+<h2>The Uncomfortable Truth</h2>
+
+<p>
+Here's what I think this experiment demonstrates:
+</p>
+
+<p>
+<strong>Code review is not the only, or even the best, way to verify correctness.</strong>
+For mathematically complex code, behavioral testing (does it produce the right output?),
+cross-validation (does it match a reference implementation?), and adversarial analysis
+(what happens with malicious input?) are often more effective than reading source code.
+</p>
+
+<p>
+This has always been true &mdash; few developers can verify a TLS implementation by reading it &mdash;
+but AI makes it more visible because the volume and complexity of AI-generated code can exceed
+any individual's review capacity.
+</p>
+
+<p>
+The practical approach isn't "never trust AI code" or "always review every line." It's to build
+a verification pipeline that combines:
+</p>
+
+<ol>
+  <li><strong>Feature-level proof</strong> &mdash; does it actually work?</li>
+  <li><strong>Reference comparison</strong> &mdash; does it match known-good implementations?</li>
+  <li><strong>Multi-AI review</strong> &mdash; different models catch different bugs</li>
+  <li><strong>Security scanning</strong> &mdash; dedicated adversarial analysis of trust boundaries</li>
+  <li><strong>Eventually, human expert review</strong> &mdash; targeted at the critical paths, informed by the automated findings</li>
+</ol>
+
+<p>
+The key shift is from <em>"I reviewed the code and it looks right"</em> to
+<em>"I tested the behavior, scanned for vulnerabilities, cross-validated with references,
+and had multiple AI systems review it."</em> The second approach is arguably more rigorous
+than traditional code review, even if no human read every line.
+</p>
+
+<h2>Try It Yourself</h2>
+
+<p>
+The <a href="index.html">live demo</a> runs entirely in your browser using WebGPU. Load the demo
+image (8192&times;6144, compressed to 38% of the original JPEG), or compress your own photos using
+the Compress tab. The <a href="https://github.com/ljack/switching-games-compression">source code</a>
+is on GitHub, including the original paper, the Python reference implementation, and all 12 task
+files documenting what was built and verified.
+</p>
+
+<p>
+If you're a signal processing expert and want to review the mathematical correctness of the
+GPU shaders, I'd love to hear from you. That's the one verification step we haven't done yet
+&mdash; and it would complete the pipeline.
+</p>
+
+</article>
+</body>
+</html>
