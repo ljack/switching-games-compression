@@ -43,6 +43,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>,
 //   Y[0] = X[0] / alpha0
 //   Y[k] = X[k] / alpha * exp(j * pi * k / (2N))    for k > 0
 // where alpha0 = sqrt(1/N), alpha = sqrt(2/N)
+// IDCT pre-twiddle: V[k] = (X[k] / alpha[k]) * exp(+j*pi*k/(2N)) / N
+// Makhoul 1980 approach. The /N compensates for unnormalized IFFT.
+// After IFFT, take Re and de-reorder to get spatial signal.
 const IDCT_PRETWIDDLE = /* wgsl */`
 struct P { num_rows: u32, N: u32 }
 @group(0) @binding(0) var<uniform> p: P;
@@ -60,13 +63,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>,
   let N_f = f32(p.N);
   let alpha0 = sqrt(1.0 / N_f);
   let alpha_k = sqrt(2.0 / N_f);
-  let scale = select(val / alpha_k, val / alpha0, k == 0u);
-  // Multiply by N for IFFT normalization (our IFFT doesn't divide by N)
-  let scaled = scale * N_f;
+  let alpha = select(alpha_k, alpha0, k == 0u);
+  let factor = select(2.0, 1.0, k == 0u);
+  let scaled = val / alpha * factor / N_f;
   let angle = 3.14159265358979 * f32(k) / (2.0 * N_f);
-  let re = scaled * cos(angle);
-  let im = scaled * sin(angle);
-  output[row * p.N + k] = vec2<f32>(re, im);
+  output[row * p.N + k] = vec2<f32>(scaled * cos(angle), scaled * sin(angle));
 }`;
 
 // IDCT de-reorder: complex IFFT output → f32 spatial values
