@@ -1,6 +1,6 @@
 # Task 14: Pre-allocate ALS Iteration Buffers
 
-## Status: pending
+## Status: completed
 
 ## Description
 `alsIteration()` in gpu-compress.js creates ~15 GPU buffers and ~8 uniform buffers per call.

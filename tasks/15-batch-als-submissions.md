@@ -1,6 +1,6 @@
 # Task 15: Batch ALS GPU Submissions into Single Command Encoder
 
-## Status: pending
+## Status: completed
 
 ## Description
 `alsIteration()` calls `device.queue.submit()` 12 times per iteration — once per compute pass.

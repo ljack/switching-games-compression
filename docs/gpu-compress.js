@@ -736,213 +736,186 @@ export class GPUCompressor {
     return { indices, values, nnz };
   }
 
-  // Run ALS iteration on GPU
-  // C: f32 buffer (n×k), M: f32 buffer (n×k)
-  // L: f32 buffer (layers×n), R: f32 buffer (layers×k)
-  // Returns { L, R, residual } as GPU buffers (L, R) and scalar (residual)
-  async alsIteration(C_buf, M_buf, L_buf, R_buf, n, k, layers) {
+  // Pre-allocate all GPU buffers needed by alsIteration.
+  // Sizes depend only on n, k, layers (constant across iterations).
+  _createALSBuffers(n, k, layers) {
     const total = n * k;
     const layers2 = layers * layers;
-    const tmp = [];
+    const numWG = Math.ceil(total / WG);
+    return {
+      outerL:   this._createBuf(layers2 * n * 4),
+      outerR:   this._createBuf(layers2 * k * 4),
+      EtE_R:    this._createBuf(layers2 * k * 4),
+      EtE_L:    this._createBuf(layers2 * n * 4),
+      Etm_R:    this._createBuf(layers * k * 4),
+      Etm_L:    this._createBuf(layers * n * 4),
+      newR:     this._createBuf(layers * k * 4),
+      newL:     this._createBuf(layers * n * 4),
+      C_T:      this._createBuf(total * 4),
+      M_T:      this._createBuf(total * 4),
+      LTR:      this._createBuf(total * 4),
+      partials: this._createBuf(numWG * 4),
+    };
+  }
+
+  _destroyALSBuffers(bufs) {
+    for (const b of Object.values(bufs)) b.destroy();
+  }
+
+  // Run ALS iteration on GPU — single command encoder, pre-allocated buffers.
+  // C: f32 buffer (n×k), M: f32 buffer (n×k)
+  // L: f32 buffer (layers×n), R: f32 buffer (layers×k)
+  // bufs: pre-allocated buffer object from _createALSBuffers
+  // Returns { L, R, residual } — L_buf and R_buf are updated in-place via copy
+  async alsIteration(C_buf, M_buf, L_buf, R_buf, n, k, layers, bufs) {
+    const total = n * k;
+    const layers2 = layers * layers;
+    const numWG = Math.ceil(total / WG);
+    const tmp = []; // uniform buffers only (tiny, content varies per iteration)
+
+    const enc = this.device.createCommandEncoder();
 
     // ─── Solve for R given L ───
     // 1. outer_diag(L)
-    const outerL = this._createBuf(layers2 * n * 4);
     const uOuterL = this._uniform(new Uint32Array([n, layers]));
     tmp.push(uOuterL);
     {
-      const enc = this.device.createCommandEncoder();
       const p = enc.beginComputePass();
       p.setPipeline(this.P.outerDiag);
-      p.setBindGroup(0, this._bg(this.P.outerDiag, [uOuterL, L_buf, outerL]));
+      p.setBindGroup(0, this._bg(this.P.outerDiag, [uOuterL, L_buf, bufs.outerL]));
       p.dispatchWorkgroups(...dims(n));
       p.end();
-      this.device.queue.submit([enc.finish()]);
     }
 
     // 2. ALS_GRAM(outerL, C) → EtE_R (layers2 × k)
-    const EtE_R = this._createBuf(layers2 * k * 4);
     const uGramR = this._uniformMixed([n, k, layers, layers2], ['u32', 'u32', 'u32', 'u32']);
     tmp.push(uGramR);
     {
-      const enc = this.device.createCommandEncoder();
       const p = enc.beginComputePass();
       p.setPipeline(this.P.alsGram);
-      p.setBindGroup(0, this._bg(this.P.alsGram, [uGramR, outerL, C_buf, EtE_R]));
+      p.setBindGroup(0, this._bg(this.P.alsGram, [uGramR, bufs.outerL, C_buf, bufs.EtE_R]));
       p.dispatchWorkgroups(...dims(layers2 * k));
       p.end();
-      this.device.queue.submit([enc.finish()]);
     }
 
     // 3. ALS_RHS(L, C, M) → Etm_R (layers × k)
-    const Etm_R = this._createBuf(layers * k * 4);
     const uRhsR = this._uniform(new Uint32Array([n, k, layers]));
     tmp.push(uRhsR);
     {
-      const enc = this.device.createCommandEncoder();
       const p = enc.beginComputePass();
       p.setPipeline(this.P.alsRhs);
-      p.setBindGroup(0, this._bg(this.P.alsRhs, [uRhsR, L_buf, C_buf, M_buf, Etm_R]));
+      p.setBindGroup(0, this._bg(this.P.alsRhs, [uRhsR, L_buf, C_buf, M_buf, bufs.Etm_R]));
       p.dispatchWorkgroups(...dims(layers * k));
       p.end();
-      this.device.queue.submit([enc.finish()]);
     }
 
-    // 4. Batch solve → new R
-    const newR = this._createBuf(layers * k * 4);
+    // 4. Batch solve → newR
     const uSolveR = this._uniform(new Uint32Array([k, layers]));
     tmp.push(uSolveR);
     {
-      const enc = this.device.createCommandEncoder();
       const p = enc.beginComputePass();
       p.setPipeline(this.P.batchSolve);
-      p.setBindGroup(0, this._bg(this.P.batchSolve, [uSolveR, EtE_R, Etm_R, newR]));
+      p.setBindGroup(0, this._bg(this.P.batchSolve, [uSolveR, bufs.EtE_R, bufs.Etm_R, bufs.newR]));
       p.dispatchWorkgroups(...dims(k));
       p.end();
-      this.device.queue.submit([enc.finish()]);
     }
 
-    outerL.destroy();
-    EtE_R.destroy();
-    Etm_R.destroy();
-
     // ─── Solve for L given new R ───
-    // 5. outer_diag(R)
-    const outerR = this._createBuf(layers2 * k * 4);
+    // 5. outer_diag(R) — uses newR from step 4
     const uOuterR = this._uniform(new Uint32Array([k, layers]));
     tmp.push(uOuterR);
     {
-      const enc = this.device.createCommandEncoder();
       const p = enc.beginComputePass();
       p.setPipeline(this.P.outerDiag);
-      p.setBindGroup(0, this._bg(this.P.outerDiag, [uOuterR, newR, outerR]));
+      p.setBindGroup(0, this._bg(this.P.outerDiag, [uOuterR, bufs.newR, bufs.outerR]));
       p.dispatchWorkgroups(...dims(k));
       p.end();
-      this.device.queue.submit([enc.finish()]);
     }
 
-    // 6. ALS_GRAM for L: sum over j (columns/k dimension)
-    // For L solve: EtE[a,b,i] = sum_j outer_R[a,b,j] * C[i,j]^2
-    // This is (layers2, k) @ (k, n) transposed — but we need to handle differently
-    // Actually the ALS for L is: we transpose the problem
-    // EtE_L[a,b,i] = sum_j R_outer[a,b,j] * C_T[j,i]^2
-    // We reuse ALS_GRAM with swapped N and K, and transposed C
-    // For simplicity, read back C, transpose, and re-upload
-    // Actually, the GEMM is (layers2, k) @ (k, n) where C is accessed as C[i,j] = C_flat[i*k+j]
-    // For the L solve, we need sum_j outer_R[a,b,j] * C[i,j]^2 for each i
-    // This is a different access pattern. Let's use a dedicated shader or transpose approach.
+    // 6. Transpose C and M for the L solve
+    this.fft.encodeTranspose(enc, n, k, C_buf, bufs.C_T, tmp);
+    this.fft.encodeTranspose(enc, n, k, M_buf, bufs.M_T, tmp);
 
-    // Simplest: transpose C, then use ALS_GRAM with swapped dims
-    // C is n×k, C^T is k×n
-    const C_T = this._createBuf(total * 4);
-    {
-      const enc = this.device.createCommandEncoder();
-      this.fft.encodeTranspose(enc, n, k, C_buf, C_T, tmp);
-      this.device.queue.submit([enc.finish()]);
-    }
-
-    // Similarly transpose M
-    const M_T = this._createBuf(total * 4);
-    {
-      const enc = this.device.createCommandEncoder();
-      this.fft.encodeTranspose(enc, n, k, M_buf, M_T, tmp);
-      this.device.queue.submit([enc.finish()]);
-    }
-
-    const EtE_L = this._createBuf(layers2 * n * 4);
+    // 7. ALS_GRAM for L
     const uGramL = this._uniformMixed([k, n, layers, layers2], ['u32', 'u32', 'u32', 'u32']);
     tmp.push(uGramL);
     {
-      const enc = this.device.createCommandEncoder();
       const p = enc.beginComputePass();
       p.setPipeline(this.P.alsGram);
-      p.setBindGroup(0, this._bg(this.P.alsGram, [uGramL, outerR, C_T, EtE_L]));
+      p.setBindGroup(0, this._bg(this.P.alsGram, [uGramL, bufs.outerR, bufs.C_T, bufs.EtE_L]));
       p.dispatchWorkgroups(...dims(layers2 * n));
       p.end();
-      this.device.queue.submit([enc.finish()]);
     }
 
-    const Etm_L = this._createBuf(layers * n * 4);
+    // 8. ALS_RHS for L
     const uRhsL = this._uniform(new Uint32Array([k, n, layers]));
     tmp.push(uRhsL);
     {
-      const enc = this.device.createCommandEncoder();
       const p = enc.beginComputePass();
       p.setPipeline(this.P.alsRhs);
-      p.setBindGroup(0, this._bg(this.P.alsRhs, [uRhsL, newR, C_T, M_T, Etm_L]));
+      p.setBindGroup(0, this._bg(this.P.alsRhs, [uRhsL, bufs.newR, bufs.C_T, bufs.M_T, bufs.Etm_L]));
       p.dispatchWorkgroups(...dims(layers * n));
       p.end();
-      this.device.queue.submit([enc.finish()]);
     }
 
-    const newL = this._createBuf(layers * n * 4);
+    // 9. Batch solve → newL
     const uSolveL = this._uniform(new Uint32Array([n, layers]));
     tmp.push(uSolveL);
     {
-      const enc = this.device.createCommandEncoder();
       const p = enc.beginComputePass();
       p.setPipeline(this.P.batchSolve);
-      p.setBindGroup(0, this._bg(this.P.batchSolve, [uSolveL, EtE_L, Etm_L, newL]));
+      p.setBindGroup(0, this._bg(this.P.batchSolve, [uSolveL, bufs.EtE_L, bufs.Etm_L, bufs.newL]));
       p.dispatchWorkgroups(...dims(n));
       p.end();
-      this.device.queue.submit([enc.finish()]);
     }
 
-    outerR.destroy();
-    C_T.destroy();
-    M_T.destroy();
-    EtE_L.destroy();
-    Etm_L.destroy();
-
     // ─── Compute residual ───
-    // matmul L^T @ R
-    const LTR = this._createBuf(total * 4);
+    // 10. matmul L^T @ R
     const uMat = this._uniform(new Uint32Array([n, k, layers]));
     tmp.push(uMat);
     {
-      const enc = this.device.createCommandEncoder();
       const p = enc.beginComputePass();
       p.setPipeline(this.P.matmulLTR);
-      p.setBindGroup(0, this._bg(this.P.matmulLTR, [uMat, newL, newR, LTR]));
+      p.setBindGroup(0, this._bg(this.P.matmulLTR, [uMat, bufs.newL, bufs.newR, bufs.LTR]));
       p.dispatchWorkgroups(...dims(total));
       p.end();
-      this.device.queue.submit([enc.finish()]);
     }
 
-    // Compute residual
-    const numWG = Math.ceil(total / WG);
-    const partials = this._createBuf(numWG * 4);
+    // 11. Compute residual per-workgroup partials
     {
-      const enc = this.device.createCommandEncoder();
       const p = enc.beginComputePass();
       p.setPipeline(this.P.computeResidual);
-      p.setBindGroup(0, this._bg(this.P.computeResidual, [C_buf, LTR, M_buf, partials]));
+      p.setBindGroup(0, this._bg(this.P.computeResidual, [C_buf, bufs.LTR, M_buf, bufs.partials]));
       p.dispatchWorkgroups(...dims(total));
       p.end();
-      this.device.queue.submit([enc.finish()]);
     }
 
-    // Final reduction
+    // 12. Final reduction
     const uReduce = this._uniform(new Uint32Array([numWG]));
     tmp.push(uReduce);
     {
-      const enc = this.device.createCommandEncoder();
       const p = enc.beginComputePass();
       p.setPipeline(this.P.reduceSum);
-      p.setBindGroup(0, this._bg(this.P.reduceSum, [uReduce, partials]));
+      p.setBindGroup(0, this._bg(this.P.reduceSum, [uReduce, bufs.partials]));
       p.dispatchWorkgroups(1, 1, 1);
       p.end();
-      this.device.queue.submit([enc.finish()]);
     }
 
-    const residualData = new Float32Array((await this._readback(partials, 4)).buffer);
+    // Copy newL → L_buf, newR → R_buf so caller's buffers are updated
+    enc.copyBufferToBuffer(bufs.newL, 0, L_buf, 0, layers * n * 4);
+    enc.copyBufferToBuffer(bufs.newR, 0, R_buf, 0, layers * k * 4);
+
+    // Single submit for all 12 compute passes + 2 copies
+    this.device.queue.submit([enc.finish()]);
+
+    // Only readback needed: residual scalar from partials[0]
+    const residualData = new Float32Array((await this._readback(bufs.partials, 4)).buffer);
     const residual = residualData[0];
 
-    LTR.destroy();
-    partials.destroy();
+    // Destroy only uniform buffers (tiny, content varies per iteration)
     for (const u of tmp) u.destroy();
 
-    return { L: newL, R: newR, residual };
+    return { residual };
   }
 
   // Full compression pipeline for one channel
@@ -992,19 +965,15 @@ export class GPUCompressor {
     const R_init = new Float32Array(layers * k);
     for (let i = 0; i < L_init.length; i++) L_init[i] = (Math.random() - 0.5) * 0.1;
     for (let i = 0; i < R_init.length; i++) R_init[i] = (Math.random() - 0.5) * 0.1;
-    let L_buf = this._upload(L_init);
-    let R_buf = this._upload(R_init);
+    const L_buf = this._upload(L_init);
+    const R_buf = this._upload(R_init);
 
-    // 5. ALS iterations
+    // 5. ALS iterations — pre-allocate all working buffers
+    const alsBufs = this._createALSBuffers(n, k, layers);
     let lastResidual = Infinity;
     for (let iter = 0; iter < maxIter; iter++) {
       onProgress?.(`ALS iteration ${iter + 1}/${maxIter}...`);
-      const result = await this.alsIteration(C_buf, sourceBuf, L_buf, R_buf, n, k, layers);
-
-      L_buf.destroy();
-      R_buf.destroy();
-      L_buf = result.L;
-      R_buf = result.R;
+      const result = await this.alsIteration(C_buf, sourceBuf, L_buf, R_buf, n, k, layers, alsBufs);
 
       const psnr = 10 * Math.log10(255 * 255 * total / result.residual);
       onProgress?.(`ALS iteration ${iter + 1}/${maxIter}: PSNR=${psnr.toFixed(2)} dB`);
@@ -1015,6 +984,7 @@ export class GPUCompressor {
       }
       lastResidual = result.residual;
     }
+    this._destroyALSBuffers(alsBufs);
 
     // 6. Read back L, R, C for adaptive pruning
     const finalPSNR = 10 * Math.log10(255 * 255 * total / lastResidual);
