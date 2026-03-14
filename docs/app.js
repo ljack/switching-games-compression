@@ -259,6 +259,13 @@ const ctx = canvas.getContext('2d');
 let gpuDecoder = null;
 let useGPU = false;
 
+// Comparison state
+let decodedImageData = null;  // stored after SWG3 decode
+let originalImage = null;     // HTMLImageElement of original
+let compareMode = '2up';      // '2up' | 'swipe' | 'onion'
+let imageWidth = 0;
+let imageHeight = 0;
+
 function showError(msg) {
   const box = $('error-box');
   box.textContent = msg;
@@ -379,7 +386,14 @@ async function decodeAndRender(arrayBuffer, fileName) {
   }
 
   ctx.putImageData(imageData, 0, 0);
+  decodedImageData = imageData;
+  imageWidth = k;
+  imageHeight = n;
   hideProgress();
+
+  // Show compare bar
+  $('compare-bar').classList.add('active');
+  if (originalImage) renderComparison();
 
   // Display info
   const compSize = arrayBuffer.byteLength;
@@ -435,6 +449,182 @@ async function loadFile(file) {
   }
 }
 
+// ─── Image Comparison ────────────────────────────────────────────────
+
+function loadOriginalImage(file) {
+  const url = URL.createObjectURL(file);
+  const img = new Image();
+  img.onload = () => {
+    originalImage = img;
+    $('compare-hint').textContent = `Original: ${img.naturalWidth}x${img.naturalHeight}`;
+    if (decodedImageData) renderComparison();
+  };
+  img.onerror = () => showError('Failed to load original image');
+  img.src = url;
+}
+
+function makeCanvas(imageData) {
+  const c = document.createElement('canvas');
+  c.width = imageData.width;
+  c.height = imageData.height;
+  c.getContext('2d').putImageData(imageData, 0, 0);
+  return c;
+}
+
+function makeCanvasFromImage(img, w, h) {
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  c.getContext('2d').drawImage(img, 0, 0, w, h);
+  return c;
+}
+
+function renderComparison() {
+  if (!decodedImageData || !originalImage) return;
+
+  const container = $('compare-container');
+  container.innerHTML = '';
+  container.classList.add('active');
+  // Hide the single canvas view
+  $('canvas-container').style.display = 'none';
+
+  const w = imageWidth;
+  const h = imageHeight;
+
+  if (compareMode === '2up') {
+    renderTwoUp(container, w, h);
+  } else if (compareMode === 'swipe') {
+    renderSwipe(container, w, h);
+  } else if (compareMode === 'onion') {
+    renderOnion(container, w, h);
+  }
+}
+
+function renderTwoUp(container, w, h) {
+  const wrap = document.createElement('div');
+  wrap.className = 'two-up';
+
+  const leftPanel = document.createElement('div');
+  leftPanel.className = 'panel';
+  const leftLabel = document.createElement('div');
+  leftLabel.className = 'label';
+  leftLabel.textContent = 'Original';
+  leftPanel.appendChild(leftLabel);
+  leftPanel.appendChild(makeCanvasFromImage(originalImage, w, h));
+
+  const rightPanel = document.createElement('div');
+  rightPanel.className = 'panel';
+  const rightLabel = document.createElement('div');
+  rightLabel.className = 'label';
+  rightLabel.textContent = 'SWG3 Decoded';
+  rightPanel.appendChild(rightLabel);
+  rightPanel.appendChild(makeCanvas(decodedImageData));
+
+  wrap.appendChild(leftPanel);
+  wrap.appendChild(rightPanel);
+  container.appendChild(wrap);
+}
+
+function renderSwipe(container, w, h) {
+  const wrap = document.createElement('div');
+  wrap.className = 'swipe-wrap';
+
+  // Bottom layer: decoded
+  const decodedCanvas = makeCanvas(decodedImageData);
+  wrap.appendChild(decodedCanvas);
+
+  // Clip overlay: original
+  const overlay = document.createElement('div');
+  overlay.className = 'swipe-overlay';
+  const origCanvas = makeCanvasFromImage(originalImage, w, h);
+  overlay.appendChild(origCanvas);
+  wrap.appendChild(overlay);
+
+  // Divider line
+  const line = document.createElement('div');
+  line.className = 'swipe-line';
+  wrap.appendChild(line);
+
+  // Labels
+  const lblLeft = document.createElement('div');
+  lblLeft.className = 'swipe-label swipe-label-left';
+  lblLeft.textContent = 'Original';
+  wrap.appendChild(lblLeft);
+
+  const lblRight = document.createElement('div');
+  lblRight.className = 'swipe-label swipe-label-right';
+  lblRight.textContent = 'SWG3';
+  wrap.appendChild(lblRight);
+
+  container.appendChild(wrap);
+
+  let fraction = 0.5;
+
+  function updateSwipe(f) {
+    fraction = Math.max(0, Math.min(1, f));
+    const displayW = decodedCanvas.getBoundingClientRect().width;
+    const px = fraction * displayW;
+    overlay.style.width = px + 'px';
+    line.style.left = px + 'px';
+  }
+
+  updateSwipe(0.5);
+
+  // Observe resize to keep overlay canvas sized correctly
+  const ro = new ResizeObserver(() => {
+    const rect = decodedCanvas.getBoundingClientRect();
+    origCanvas.style.width = rect.width + 'px';
+    origCanvas.style.height = rect.height + 'px';
+    updateSwipe(fraction);
+  });
+  ro.observe(decodedCanvas);
+
+  let dragging = false;
+  wrap.addEventListener('mousedown', e => { dragging = true; handleSwipeMove(e); });
+  wrap.addEventListener('mousemove', e => { if (dragging) handleSwipeMove(e); });
+  window.addEventListener('mouseup', () => { dragging = false; });
+  wrap.addEventListener('touchstart', e => { handleSwipeTouch(e); }, { passive: false });
+  wrap.addEventListener('touchmove', e => { handleSwipeTouch(e); }, { passive: false });
+
+  function handleSwipeMove(e) {
+    const rect = decodedCanvas.getBoundingClientRect();
+    updateSwipe((e.clientX - rect.left) / rect.width);
+  }
+
+  function handleSwipeTouch(e) {
+    e.preventDefault();
+    const touch = e.touches[0];
+    const rect = decodedCanvas.getBoundingClientRect();
+    updateSwipe((touch.clientX - rect.left) / rect.width);
+  }
+}
+
+function renderOnion(container, w, h) {
+  const wrap = document.createElement('div');
+  wrap.className = 'onion-wrap';
+
+  // Bottom: decoded
+  wrap.appendChild(makeCanvas(decodedImageData));
+
+  // Top: original with opacity
+  const topDiv = document.createElement('div');
+  topDiv.className = 'onion-top';
+  topDiv.id = 'onion-top-layer';
+  topDiv.appendChild(makeCanvasFromImage(originalImage, w, h));
+  wrap.appendChild(topDiv);
+
+  container.appendChild(wrap);
+
+  const opacity = $('opacity-slider').value / 100;
+  topDiv.style.opacity = opacity;
+}
+
+function exitComparison() {
+  $('compare-container').classList.remove('active');
+  $('compare-container').innerHTML = '';
+  $('canvas-container').style.display = 'flex';
+}
+
 // ─── Event Handlers ──────────────────────────────────────────────────
 
 $('btn-demo').addEventListener('click', loadDemo);
@@ -460,13 +650,57 @@ for (const target of [dropZone, canvasContainer]) {
     e.preventDefault();
     dropZone.classList.remove('drag-over');
     const file = e.dataTransfer.files[0];
-    if (file && file.name.endsWith('.swg')) {
+    if (!file) return;
+    if (file.name.endsWith('.swg')) {
       loadFile(file);
+    } else if (file.type.startsWith('image/') && decodedImageData) {
+      loadOriginalImage(file);
+    } else if (file.type.startsWith('image/')) {
+      showError('Load a .swg file first, then drop the original image to compare');
     } else {
-      showError('Please drop a .swg file');
+      showError('Please drop a .swg file or an image file');
     }
   });
 }
+
+// Compare: load original image
+$('btn-original').addEventListener('click', () => $('original-input').click());
+$('original-input').addEventListener('change', e => {
+  if (e.target.files[0]) loadOriginalImage(e.target.files[0]);
+});
+
+// Compare: mode tabs
+for (const tab of document.querySelectorAll('.mode-tab')) {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.mode-tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    compareMode = tab.dataset.mode;
+    // Show opacity slider only for onion skin
+    $('opacity-control').classList.toggle('visible', compareMode === 'onion');
+    if (originalImage && decodedImageData) renderComparison();
+  });
+}
+
+// Compare: opacity slider
+$('opacity-slider').addEventListener('input', e => {
+  const val = e.target.value;
+  $('opacity-value').textContent = val + '%';
+  const top = document.getElementById('onion-top-layer');
+  if (top) top.style.opacity = val / 100;
+});
+
+// Allow dropping original images on the compare container
+$('compare-container').addEventListener('dragover', e => e.preventDefault());
+$('compare-container').addEventListener('drop', e => {
+  e.preventDefault();
+  const file = e.dataTransfer.files[0];
+  if (!file) return;
+  if (file.name.endsWith('.swg')) {
+    loadFile(file);
+  } else if (file.type.startsWith('image/') && decodedImageData) {
+    loadOriginalImage(file);
+  }
+});
 
 // ─── Init ────────────────────────────────────────────────────────────
 

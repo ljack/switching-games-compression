@@ -174,6 +174,157 @@
     font-size: 13px;
     margin-bottom: 12px;
   }
+
+  /* ─── Comparison UI ─────────────────────────────────────────────── */
+  #compare-bar {
+    display: none;
+    width: 100%;
+    max-width: 800px;
+    margin-bottom: 12px;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  #compare-bar.active { display: flex; }
+  .mode-tabs {
+    display: flex;
+    gap: 0;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .mode-tab {
+    background: var(--surface);
+    color: var(--text-dim);
+    border: none;
+    border-right: 1px solid var(--border);
+    padding: 5px 12px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+    border-radius: 0;
+  }
+  .mode-tab:last-child { border-right: none; }
+  .mode-tab:hover { color: var(--text); }
+  .mode-tab.active {
+    background: var(--accent-dim);
+    color: #fff;
+  }
+  #opacity-control {
+    display: none;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  #opacity-control.visible { display: flex; }
+  #opacity-slider {
+    width: 100px;
+    accent-color: var(--accent);
+  }
+  #compare-hint {
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+
+  /* Comparison containers */
+  #compare-container {
+    display: none;
+    width: 100%;
+    justify-content: center;
+  }
+  #compare-container.active { display: flex; }
+
+  /* 2-up mode */
+  .two-up {
+    display: flex;
+    gap: 8px;
+    width: 100%;
+    max-width: 100%;
+  }
+  .two-up .panel {
+    flex: 1;
+    min-width: 0;
+    text-align: center;
+  }
+  .two-up .panel canvas {
+    max-width: 100%;
+    height: auto;
+  }
+  .two-up .label {
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-bottom: 4px;
+  }
+
+  /* Swipe mode */
+  .swipe-wrap {
+    position: relative;
+    overflow: hidden;
+    cursor: ew-resize;
+    line-height: 0;
+  }
+  .swipe-wrap canvas {
+    display: block;
+    max-width: 100%;
+    height: auto;
+  }
+  .swipe-overlay {
+    position: absolute;
+    top: 0; left: 0;
+    height: 100%;
+    overflow: hidden;
+    pointer-events: none;
+  }
+  .swipe-overlay canvas {
+    display: block;
+    height: 100%;
+    width: auto;
+    max-width: none;
+  }
+  .swipe-line {
+    position: absolute;
+    top: 0;
+    width: 2px;
+    height: 100%;
+    background: var(--accent);
+    pointer-events: none;
+    z-index: 2;
+  }
+  .swipe-label {
+    position: absolute;
+    top: 6px;
+    font-size: 11px;
+    color: #fff;
+    background: rgba(0,0,0,0.6);
+    padding: 2px 6px;
+    border-radius: 3px;
+    pointer-events: none;
+    z-index: 3;
+  }
+  .swipe-label-left { left: 6px; }
+  .swipe-label-right { right: 6px; }
+
+  /* Onion skin mode */
+  .onion-wrap {
+    position: relative;
+    line-height: 0;
+  }
+  .onion-wrap canvas {
+    display: block;
+    max-width: 100%;
+    height: auto;
+  }
+  .onion-top {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%;
+    height: 100%;
+  }
+  .onion-top canvas {
+    width: 100%;
+    height: 100%;
+  }
 </style>
 </head>
 <body>
@@ -197,9 +348,25 @@
     <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
   </div>
   <div id="info-panel"></div>
+  <div id="compare-bar">
+    <button id="btn-original">Load Original...</button>
+    <input type="file" id="original-input" accept="image/*" hidden>
+    <div class="mode-tabs">
+      <button class="mode-tab active" data-mode="2up">2-up</button>
+      <button class="mode-tab" data-mode="swipe">Swipe</button>
+      <button class="mode-tab" data-mode="onion">Onion Skin</button>
+    </div>
+    <div id="opacity-control">
+      <span>Opacity:</span>
+      <input type="range" id="opacity-slider" min="0" max="100" value="50">
+      <span id="opacity-value">50%</span>
+    </div>
+    <span id="compare-hint">Drop or select original image to compare</span>
+  </div>
   <div id="canvas-container">
     <canvas id="canvas" width="1" height="1"></canvas>
   </div>
+  <div id="compare-container"></div>
   <div id="drop-zone">Drop .swg file here or use buttons above</div>
 </main>
 
