@@ -1141,7 +1141,7 @@ function capturePhoto() {
   c.height = video.videoHeight;
   const ctx2 = c.getContext('2d');
   ctx2.drawImage(video, 0, 0);
-  setSourceFromCanvas(c);
+  setSourceFromCanvas(c, { fileName: 'Camera photo', fileType: 'image/camera' });
   closeCamera();
 }
 
@@ -1175,7 +1175,13 @@ function nearestFFTSize(N) {
   return 2;
 }
 
-function setSourceFromCanvas(c) {
+function formatBytes(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function setSourceFromCanvas(c, fileMeta) {
   // Resize to FFT-compatible dimensions (2^a * 3^b)
   const origW = c.width, origH = c.height;
   const fitW = nearestFFTSize(origW);
@@ -1200,11 +1206,22 @@ function setSourceFromCanvas(c) {
     preview.style.display = 'block';
   }
 
-  let info = `${srcCanvas.width} x ${srcCanvas.height}`;
-  if (fitW !== origW || fitH !== origH) {
-    info += ` (resized from ${origW} x ${origH})`;
+  // Build rich source info
+  const w = srcCanvas.width, h = srcCanvas.height;
+  const pixels = w * h;
+  const rawSize = pixels * 3; // RGB uncompressed
+  const infoEl = $('source-info');
+  let html = `<strong>${w} &times; ${h}</strong>`;
+  html += ` &nbsp;&middot;&nbsp; ${(pixels / 1000).toFixed(0)}K pixels`;
+  html += ` &nbsp;&middot;&nbsp; Raw: ${formatBytes(rawSize)}`;
+  if (fileMeta) {
+    if (fileMeta.fileSize) html += ` &nbsp;&middot;&nbsp; ${fileMeta.fileType?.split('/')[1]?.toUpperCase() || 'File'}: ${formatBytes(fileMeta.fileSize)}`;
+    if (fileMeta.fileName) html += ` &nbsp;&middot;&nbsp; ${fileMeta.fileName}`;
   }
-  $('source-info').textContent = info;
+  if (fitW !== origW || fitH !== origH) {
+    html += `<br><span style="color:var(--warn);">Resized from ${origW} &times; ${origH} for FFT compatibility</span>`;
+  }
+  infoEl.innerHTML = html;
   $('btn-compress').disabled = false;
   $('source-drop-zone')?.classList.add('hidden');
 }
@@ -1217,7 +1234,7 @@ function loadSourceImage(file) {
     c.width = img.naturalWidth;
     c.height = img.naturalHeight;
     c.getContext('2d').drawImage(img, 0, 0);
-    setSourceFromCanvas(c);
+    setSourceFromCanvas(c, { fileName: file.name, fileSize: file.size, fileType: file.type });
     URL.revokeObjectURL(url);
   };
   img.src = url;
@@ -1247,14 +1264,26 @@ async function startCompression() {
 
     // Show results
     const rawSize = result.n * result.k * 3;
-    const compRatio = (result.data.length / rawSize * 100).toFixed(1);
+    const swgSize = result.data.length;
+    const compRatio = (swgSize / rawSize * 100).toFixed(1);
+    const savings = (100 - swgSize / rawSize * 100).toFixed(1);
     const avgPSNR = result.channelResults.reduce((s, c) => s + c.psnr, 0) / 3;
+    const avgLayers = result.channelResults.reduce((s, c) => s + c.layers, 0) / 3;
 
     $('compress-results').style.display = 'block';
     $('compress-results').innerHTML = `
-      <div>File size: ${(result.data.length / 1024).toFixed(1)} KB (${compRatio}% of raw)</div>
-      <div>Average PSNR: ${avgPSNR.toFixed(2)} dB</div>
-      <div>Per-channel: ${result.channelResults.map((c, i) => `${['R','G','B'][i]}=${c.psnr.toFixed(1)}`).join(', ')}</div>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px 24px; margin-bottom:8px;">
+        <div><span style="color:var(--text-dim);">Original (raw)</span><br><strong>${formatBytes(rawSize)}</strong></div>
+        <div><span style="color:var(--text-dim);">SWG3 compressed</span><br><strong style="color:var(--success);">${formatBytes(swgSize)}</strong></div>
+        <div><span style="color:var(--text-dim);">Compression</span><br><strong>${savings}% smaller</strong> (${compRatio}% of raw)</div>
+        <div><span style="color:var(--text-dim);">Quality (PSNR)</span><br><strong>${avgPSNR.toFixed(1)} dB</strong></div>
+      </div>
+      <div style="font-size:12px; color:var(--text-dim);">
+        Per-channel: ${result.channelResults.map((c, i) =>
+          `<span style="color:${['#f66','#6f6','#66f'][i]}">${['R','G','B'][i]}</span>=${c.psnr.toFixed(1)} dB (${c.layers}L)`
+        ).join(' &nbsp; ')}
+        &nbsp;&middot;&nbsp; ${result.n} &times; ${result.k}
+      </div>
     `;
 
     // Download button
