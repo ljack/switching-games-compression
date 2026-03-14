@@ -1063,19 +1063,55 @@ function closeCamera() {
   if (area) area.style.display = 'none';
 }
 
+// Find nearest value of form 2^a * 3^b that is <= N
+function nearestFFTSize(N) {
+  // Generate all 2^a * 3^b values up to N
+  const vals = [];
+  for (let a = 0; (1 << a) <= N; a++) {
+    let v = 1 << a;
+    while (v <= N) {
+      vals.push(v);
+      v *= 3;
+    }
+  }
+  vals.sort((a, b) => a - b);
+  // Return largest value <= N (at least 2)
+  for (let i = vals.length - 1; i >= 0; i--) {
+    if (vals[i] <= N) return vals[i];
+  }
+  return 2;
+}
+
 function setSourceFromCanvas(c) {
-  const ctx2 = c.getContext('2d');
-  sourceImageData = ctx2.getImageData(0, 0, c.width, c.height);
+  // Resize to FFT-compatible dimensions (2^a * 3^b)
+  const origW = c.width, origH = c.height;
+  const fitW = nearestFFTSize(origW);
+  const fitH = nearestFFTSize(origH);
+
+  let srcCanvas = c;
+  if (fitW !== origW || fitH !== origH) {
+    srcCanvas = document.createElement('canvas');
+    srcCanvas.width = fitW;
+    srcCanvas.height = fitH;
+    srcCanvas.getContext('2d').drawImage(c, 0, 0, origW, origH, 0, 0, fitW, fitH);
+  }
+
+  const ctx2 = srcCanvas.getContext('2d');
+  sourceImageData = ctx2.getImageData(0, 0, srcCanvas.width, srcCanvas.height);
 
   const preview = $('source-preview');
   if (preview) {
-    preview.width = c.width;
-    preview.height = c.height;
+    preview.width = srcCanvas.width;
+    preview.height = srcCanvas.height;
     preview.getContext('2d').putImageData(sourceImageData, 0, 0);
     preview.style.display = 'block';
   }
 
-  $('source-info').textContent = `${c.width} x ${c.height}`;
+  let info = `${srcCanvas.width} x ${srcCanvas.height}`;
+  if (fitW !== origW || fitH !== origH) {
+    info += ` (resized from ${origW} x ${origH})`;
+  }
+  $('source-info').textContent = info;
   $('btn-compress').disabled = false;
   $('source-drop-zone')?.classList.add('hidden');
 }
