@@ -928,7 +928,7 @@ async function compressImage(sourceImageData, options) {
     }
     const sourceBuf = gpuCompressor._upload(sourceChannel);
 
-    let bestRatio = 0.30;
+    let bestRatio = 0.05;
     if (autoTune) {
       // Coarse search then binary refinement (matching Python auto-tune)
       const coarseRatios = [0.005, 0.01, 0.02, 0.05, 0.10, 0.20, 0.30, 0.50];
@@ -991,9 +991,9 @@ async function compressImage(sourceImageData, options) {
       );
       channelResults.push(result);
     } else {
-      // Fixed ratio compression (0.30 matches Python default)
+      // Fixed ratio compression (0.05 default for smaller files)
       const result = await gpuCompressor.compressChannel(
-        channelBuf, sourceBuf, n, k, layers, targetPSNR, maxIter, 0.30,
+        channelBuf, sourceBuf, n, k, layers, targetPSNR, maxIter, 0.05,
         (msg) => setProgress(`Compress ${name}: ${msg}`, (ch + 0.5) / 3),
         sourceChannel
       );
@@ -1222,6 +1222,14 @@ function setSourceFromCanvas(c, fileMeta) {
     html += `<br><span style="color:var(--warn);">Resized from ${origW} &times; ${origH} for FFT compatibility</span>`;
   }
   infoEl.innerHTML = html;
+  // Update estimated size hint
+  const estRatio = 0.05;
+  const estNnz = Math.round(w * h * estRatio);
+  const estDiags = 2 * 6 * (w + h) * 2; // layers * (n+k) * f16
+  const estCoeffs = estNnz * 6; // indices(4) + values(2)
+  const estTotal = (estDiags + estCoeffs) * 3; // 3 channels
+  const estEl = $('size-estimate');
+  if (estEl) estEl.textContent = `Estimated SWG3: ~${formatBytes(estTotal)} at 5% DCT ratio`;
   $('btn-compress').disabled = false;
   $('source-drop-zone')?.classList.add('hidden');
 }
