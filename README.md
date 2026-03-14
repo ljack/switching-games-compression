@@ -82,3 +82,48 @@ Per-channel storage includes:
 | 8192x6144 demo | ~1s | FFT IDCT (batched) |
 | 512x512 test | ~12ms | FFT IDCT |
 | Compression (512x512, 6 layers) | ~3s | GPU ALS + FFT DCT |
+
+## Security
+
+This project was built by AI (Claude) and has undergone multiple security review layers:
+
+### Audit Results
+
+| Reviewer | Findings | Status |
+|----------|----------|--------|
+| Claude security audit | 7 vulnerabilities (2 critical, 2 high, 2 medium, 1 low) | All fixed |
+| GitHub Copilot review | XSS in setInfo(), encoding inconsistency, missing validation | All fixed |
+| SWG3 fuzz testing | 20 deterministic + 50 random tests | All passing |
+
+### Mitigations
+
+- **Content Security Policy**: `script-src 'self'` prevents inline script injection
+- **Decompression bomb protection**: 256 MB limit on decompressed payload (browser + Python)
+- **SWG3 parser hardening**: bounds checking on all fields, dimension limits (32768x32768), index validation, NaN/Infinity sanitization
+- **No server component**: static site with no authentication, no user data storage, no backend
+
+### Threat Model
+
+The primary attack surface is a crafted `.swg` file. Defenses:
+
+| Attack | Defense |
+|--------|---------|
+| Decompression bomb | 256 MB payload limit |
+| Out-of-bounds GPU write | All scatter indices validated < totalPixels |
+| Integer overflow (n×k) | Max 32768 per dimension, 256M pixel cap |
+| XSS via filename | All user text rendered via textContent, not innerHTML |
+| Truncated/corrupt payload | Bounds-checked reads with descriptive errors |
+| NaN/Infinity in diagonals | Sanitized to 0 before GPU upload |
+
+### Known Limitations
+
+- WebGPU shader correctness depends on GPU driver implementation
+- Float32 precision in GPU compute may produce slightly different results than float64 Python reference
+- The mathematical correctness of the ALS solver has not been independently verified by a domain expert
+- No formal verification of the WGSL shader code
+
+### Verification Approach
+
+See the [blog post](https://ljack.github.io/switching-games-compression/blog.html) for a detailed discussion of how AI-generated code was verified without line-by-line human review.
+
+Fuzz tests: open `test-fuzz.html` in browser to run 20+ parser security tests.
