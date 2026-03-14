@@ -49,6 +49,9 @@ function readFloat16Array(dv, offset, count) {
 
 // ─── SWG3 Parser ─────────────────────────────────────────────────────
 
+// Max decompressed payload size (256 MB) to prevent decompression bombs
+const MAX_DECOMPRESSED_SIZE = 256 * 1024 * 1024;
+
 async function decompressZlib(compressed) {
   const ds = new DecompressionStream('deflate');
   const writer = ds.writable.getWriter();
@@ -61,8 +64,12 @@ async function decompressZlib(compressed) {
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
-    chunks.push(value);
     totalLen += value.byteLength;
+    if (totalLen > MAX_DECOMPRESSED_SIZE) {
+      await reader.cancel();
+      throw new Error(`Decompressed payload exceeds ${MAX_DECOMPRESSED_SIZE} bytes — possible decompression bomb`);
+    }
+    chunks.push(value);
   }
 
   const result = new Uint8Array(totalLen);
@@ -163,32 +170,53 @@ async function parseSWG3(arrayBuffer) {
 
   const n = headerDV.getUint32(4, true);
   const k = headerDV.getUint32(8, true);
-  if (n === 0 || k === 0 || n > 65536 || k > 65536) {
-    throw new Error(`Invalid dimensions: ${n}x${k}`);
+  if (n === 0 || k === 0 || n > 32768 || k > 32768) {
+    throw new Error(`Invalid dimensions: ${n}x${k} (max 32768x32768)`);
+  }
+  const totalPixels = n * k;
+  if (totalPixels > 256 * 1024 * 1024) {
+    throw new Error(`Image too large: ${n}x${k} = ${totalPixels} pixels (max 256M)`);
   }
   const channels = headerDV.getUint8(12);
   if (channels === 0 || channels > 4) {
     throw new Error(`Invalid channel count: ${channels}`);
   }
   const layers = headerDV.getUint16(13, true);
+  if (layers > 64) {
+    throw new Error(`Invalid layer count: ${layers} (max 64)`);
+  }
   const targetPsnr = headerDV.getFloat32(15, true);
   const maxIter = headerDV.getUint8(19);
   const compressedSize = headerDV.getUint32(20, true);
 
+  if (24 + compressedSize > arrayBuffer.byteLength) {
+    throw new Error(`Compressed size ${compressedSize} exceeds file size ${arrayBuffer.byteLength - 24}`);
+  }
   const compressedData = new Uint8Array(arrayBuffer, 24, compressedSize);
   const raw = await decompressZlib(compressedData);
-  const totalPixels = n * k;
 
   const channelData = [];
   let offset = 0;
-  const dv = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+  const rawLen = raw.byteLength;
+  const dv = new DataView(raw.buffer, raw.byteOffset, rawLen);
+
+  function checkOffset(need, desc) {
+    if (offset + need > rawLen) {
+      throw new Error(`Truncated SWG3 payload: need ${need} bytes for ${desc} at offset ${offset}, only ${rawLen - offset} remaining`);
+    }
+  }
 
   for (let ch = 0; ch < channels; ch++) {
+    checkOffset(14, `channel ${ch} header`);
     const actualLayers = dv.getUint8(offset); offset += 1;
+    if (actualLayers > 64) throw new Error(`Channel ${ch}: invalid layer count ${actualLayers}`);
     const ratio = dv.getFloat32(offset, true); offset += 4;
     const nnz = dv.getUint32(offset, true); offset += 4;
+    if (nnz > totalPixels) throw new Error(`Channel ${ch}: nnz ${nnz} exceeds total pixels ${totalPixels}`);
     const indexMode = dv.getUint8(offset); offset += 1;
+    if (indexMode > 3) throw new Error(`Channel ${ch}: invalid index mode ${indexMode}`);
     const indexDataLen = dv.getUint32(offset, true); offset += 4;
+    checkOffset(indexDataLen, `channel ${ch} index data`);
     const indexData = raw.subarray(offset, offset + indexDataLen); offset += indexDataLen;
 
     let indices;
@@ -198,7 +226,16 @@ async function parseSWG3(arrayBuffer) {
       indices = decodeIndicesDelta(indexMode, indexData, nnz);
     }
 
+    // Validate all indices are in bounds
+    for (let i = 0; i < indices.length; i++) {
+      if (indices[i] >= totalPixels) {
+        throw new Error(`Channel ${ch}: index ${indices[i]} out of bounds (max ${totalPixels - 1})`);
+      }
+    }
+
+    checkOffset(4 + nnz * 2, `channel ${ch} values`);
     const scale = dv.getFloat32(offset, true); offset += 4;
+    if (!isFinite(scale)) throw new Error(`Channel ${ch}: invalid scale value ${scale}`);
     const deltaSlice = raw.slice(offset, offset + nnz * 2);
     const deltaValues = new Int16Array(deltaSlice.buffer);
     offset += nnz * 2;
@@ -209,10 +246,21 @@ async function parseSWG3(arrayBuffer) {
       values[i] = (quantized[i] / 32767) * scale;
     }
 
+    const diagBytesL = actualLayers * n * 2;
+    const diagBytesR = actualLayers * k * 2;
+    checkOffset(diagBytesL + diagBytesR, `channel ${ch} diagonals`);
     const leftDiags = readFloat16Array(dv, offset, actualLayers * n);
-    offset += actualLayers * n * 2;
+    offset += diagBytesL;
     const rightDiags = readFloat16Array(dv, offset, actualLayers * k);
-    offset += actualLayers * k * 2;
+    offset += diagBytesR;
+
+    // Sanitize NaN/Infinity in diagonals
+    for (let i = 0; i < leftDiags.length; i++) {
+      if (!isFinite(leftDiags[i])) leftDiags[i] = 0;
+    }
+    for (let i = 0; i < rightDiags.length; i++) {
+      if (!isFinite(rightDiags[i])) rightDiags[i] = 0;
+    }
 
     channelData.push({
       layers: actualLayers,
