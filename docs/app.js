@@ -1354,6 +1354,49 @@ function renderOnion(container, w, h) {
 
 $('btn-demo').addEventListener('click', loadDemo);
 
+$('btn-original').addEventListener('click', async () => {
+  clearError();
+  setProgress('Loading original image...', 0);
+  $('btn-original').disabled = true;
+  try {
+    const resp = await fetch('demo-original.jpg');
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const blob = await resp.blob();
+    const bmp = await createImageBitmap(blob);
+    const c = document.createElement('canvas');
+    c.width = bmp.width;
+    c.height = bmp.height;
+    c.getContext('2d').drawImage(bmp, 0, 0);
+
+    // Set as original for comparison
+    const img = new Image();
+    img.src = URL.createObjectURL(blob);
+    await img.decode();
+    originalImage = img;
+    $('compare-hint').textContent = `Original: ${img.naturalWidth}x${img.naturalHeight} (JPEG 6.8 MB)`;
+
+    // If no SWG decoded yet, show it directly on the main canvas
+    if (!decodedImageData) {
+      canvas.width = bmp.width;
+      canvas.height = bmp.height;
+      ctx.drawImage(bmp, 0, 0);
+      imageWidth = bmp.width;
+      imageHeight = bmp.height;
+      setInfo([`${bmp.width} x ${bmp.height}`, 'Original JPEG', 'demo-original.jpg']);
+      $('drop-zone').classList.add('hidden');
+    } else {
+      $('compare-bar').classList.add('active');
+      renderComparison();
+    }
+    hideProgress();
+  } catch (e) {
+    hideProgress();
+    showError(`Failed to load original: ${e.message}`);
+  } finally {
+    $('btn-original').disabled = false;
+  }
+});
+
 $('btn-file').addEventListener('click', () => $('file-input').click());
 $('file-input').addEventListener('change', e => {
   if (e.target.files[0]) loadFile(e.target.files[0]);
