@@ -784,9 +784,22 @@ async function loadDemo() {
   $('btn-file').disabled = true;
 
   try {
-    const resp = await fetch('demo.swg');
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const buf = await resp.arrayBuffer();
+    let buf;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const resp = await fetch('demo.swg');
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        buf = await resp.arrayBuffer();
+        break;
+      } catch (fetchErr) {
+        if (attempt < 2) {
+          setProgress(`Network error, retrying (${attempt + 2}/3)...`, 0);
+          await new Promise(r => setTimeout(r, 1000));
+        } else {
+          throw fetchErr;
+        }
+      }
+    }
     await decodeAndRender(buf, 'demo.swg');
   } catch (e) {
     hideProgress();
