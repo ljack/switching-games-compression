@@ -1001,43 +1001,36 @@ export class GPUCompressor {
     const M_data = sourceData; // CPU-side source channel (avoids GPU readback of uploaded buffer)
 
     // 7. Adaptive layer pruning — drop trailing layers with < 1% improvement
+    // Incrementally accumulate layers and compute residual at each step.
+    // The full-layer residual is computed at the end, avoiding a redundant pass.
     let actualLayers = layers;
+    let prunedPSNR = finalPSNR;
     if (layers > 1) {
       const MIN_IMPROVEMENT = 0.01;
       const mNorm = Math.sqrt(M_data.reduce((s, v) => s + v * v, 0));
 
-      // Full residual with all layers
-      const fullWeight = new Float32Array(total);
+      // Incrementally add layers and compute error at each step
+      const weight = new Float32Array(total);
+      const errors = new Float64Array(layers); // error at each layer count
       for (let l = 0; l < layers; l++) {
         for (let i = 0; i < n; i++) {
           for (let j = 0; j < k; j++) {
-            fullWeight[i * k + j] += leftDiags[l * n + i] * rightDiags[l * k + j];
+            weight[i * k + j] += leftDiags[l * n + i] * rightDiags[l * k + j];
           }
         }
-      }
-      let fullErr = 0;
-      for (let idx = 0; idx < total; idx++) {
-        const d = M_data[idx] - C_data[idx] * fullWeight[idx];
-        fullErr += d * d;
-      }
-      fullErr = Math.sqrt(fullErr);
-
-      // Try fewer layers
-      const partialWeight = new Float32Array(total);
-      for (let tryL = 1; tryL < layers; tryL++) {
-        for (let i = 0; i < n; i++) {
-          for (let j = 0; j < k; j++) {
-            partialWeight[i * k + j] += leftDiags[(tryL - 1) * n + i] * rightDiags[(tryL - 1) * k + j];
-          }
-        }
-        let err = 0;
+        let errSq = 0;
         for (let idx = 0; idx < total; idx++) {
-          const d = M_data[idx] - C_data[idx] * partialWeight[idx];
-          err += d * d;
+          const d = M_data[idx] - C_data[idx] * weight[idx];
+          errSq += d * d;
         }
-        err = Math.sqrt(err);
-        if ((err - fullErr) / (mNorm + 1e-10) < MIN_IMPROVEMENT) {
+        errors[l] = Math.sqrt(errSq);
+      }
+
+      const fullErr = errors[layers - 1];
+      for (let tryL = 1; tryL < layers; tryL++) {
+        if ((errors[tryL - 1] - fullErr) / (mNorm + 1e-10) < MIN_IMPROVEMENT) {
           actualLayers = tryL;
+          prunedPSNR = 10 * Math.log10(255 * 255 * total / (errors[tryL - 1] ** 2));
           break;
         }
       }
@@ -1046,22 +1039,6 @@ export class GPUCompressor {
     // Trim diags if pruned
     const prunedLeft = actualLayers < layers ? leftDiags.slice(0, actualLayers * n) : leftDiags;
     const prunedRight = actualLayers < layers ? rightDiags.slice(0, actualLayers * k) : rightDiags;
-
-    // Recompute PSNR with pruned layers
-    let prunedPSNR = finalPSNR;
-    if (actualLayers < layers) {
-      let residualSq = 0;
-      for (let idx = 0; idx < total; idx++) {
-        const i = Math.floor(idx / k), j = idx % k;
-        let w = 0;
-        for (let l = 0; l < actualLayers; l++) {
-          w += prunedLeft[l * n + i] * prunedRight[l * k + j];
-        }
-        const d = M_data[idx] - C_data[idx] * w;
-        residualSq += d * d;
-      }
-      prunedPSNR = 10 * Math.log10(255 * 255 * total / residualSq);
-    }
 
     // Cleanup
     dctBuf.destroy();

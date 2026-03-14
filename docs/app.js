@@ -20,10 +20,13 @@ function f16ToF32(bits) {
   return (sign ? -1 : 1) * (1 + frac / 1024) * (2 ** (exp - 15));
 }
 
+const _f16buf = new ArrayBuffer(4);
+const _f16f32 = new Float32Array(_f16buf);
+const _f16u32 = new Uint32Array(_f16buf);
+
 function f32ToF16(val) {
-  const buf = new ArrayBuffer(4);
-  new Float32Array(buf)[0] = val;
-  const bits = new Uint32Array(buf)[0];
+  _f16f32[0] = val;
+  const bits = _f16u32[0];
   const sign = (bits >> 31) & 1;
   let exp = ((bits >> 23) & 0xFF) - 127 + 15;
   let frac = (bits >> 13) & 0x3FF;
@@ -226,11 +229,9 @@ async function parseSWG3(arrayBuffer) {
       indices = decodeIndicesDelta(indexMode, indexData, nnz);
     }
 
-    // Validate all indices are in bounds
-    for (let i = 0; i < indices.length; i++) {
-      if (indices[i] >= totalPixels) {
-        throw new Error(`Channel ${ch}: index ${indices[i]} out of bounds (max ${totalPixels - 1})`);
-      }
+    // Validate indices are in bounds (bitmap is inherently bounded; delta is monotonic so check last)
+    if (indices.length > 0 && indices[indices.length - 1] >= totalPixels) {
+      throw new Error(`Channel ${ch}: index ${indices[indices.length - 1]} out of bounds (max ${totalPixels - 1})`);
     }
 
     checkOffset(4 + nnz * 2, `channel ${ch} values`);
@@ -902,23 +903,6 @@ async function loadFile(file) {
 
 // ─── Compression ──────────────────────────────────────────────────────
 
-function reconstructChannel(result, n, k) {
-  // Rebuild C from sparse DCT coefficients via CPU IDCT (approximate: just scatter values)
-  // Then compute approx = C * (L^T @ R)
-  // For preview purposes, we use a simpler approach:
-  // Reconstruct C from indices/values, then multiply by sum of outer products
-  const total = n * k;
-  const C = new Float32Array(total);
-
-  // Scatter DCT coefficients to build sparse DCT grid, then naive IDCT would be too slow.
-  // Instead, reconstruct using the formula: pixel[i,j] = C[i,j] * sum_l(L[l,i] * R[l,j])
-  // We need C values. Since we stored indices and values, rebuild C via inverse DCT.
-  // For preview, approximate by directly reconstructing from L, R, and the original source channel.
-  // Actually, the simplest approach: L^T @ R gives the weight matrix, but we need C.
-  // Let's just return 128 (gray) for now and rely on the final decode for quality preview.
-  return null;
-}
-
 function updateCompressPreview(channelResults, n, k) {
   const preview = $('compress-preview');
   if (!preview) return;
@@ -1033,21 +1017,13 @@ async function compressImage(sourceImageData, options) {
         }
       }
       // Final compression with best ratio and full iterations
-      const result = await gpuCompressor.compressChannel(
-        channelBuf, sourceBuf, n, k, layers, targetPSNR, maxIter, bestRatio,
-        (msg) => setProgress(`Compress ${name}: ${msg}`, (ch + 0.5) / 3),
-        sourceChannel
-      );
-      channelResults.push(result);
-    } else {
-      // Fixed ratio compression (0.05 default for smaller files)
-      const result = await gpuCompressor.compressChannel(
-        channelBuf, sourceBuf, n, k, layers, targetPSNR, maxIter, 0.05,
-        (msg) => setProgress(`Compress ${name}: ${msg}`, (ch + 0.5) / 3),
-        sourceChannel
-      );
-      channelResults.push(result);
     }
+    const result = await gpuCompressor.compressChannel(
+      channelBuf, sourceBuf, n, k, layers, targetPSNR, maxIter, bestRatio,
+      (msg) => setProgress(`Compress ${name}: ${msg}`, (ch + 0.5) / 3),
+      sourceChannel
+    );
+    channelResults.push(result);
 
     channelBuf.destroy();
     sourceBuf.destroy();
