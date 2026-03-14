@@ -365,6 +365,12 @@ def compress(image_path: str, output_path: str, layers: int = 6,
              target_psnr: float = None, adaptive: bool = True,
              quiet: bool = False):
     """Compress an image to .swg (SWG3) format."""
+    if layers < 1:
+        raise ValueError(f"layers must be >= 1, got {layers}")
+    if max_iter < 1:
+        raise ValueError(f"max_iter must be >= 1, got {max_iter}")
+    if not (0 < dct_ratio <= 1.0):
+        raise ValueError(f"dct_ratio must be in (0, 1], got {dct_ratio}")
     img = Image.open(image_path).convert("RGB")
     M_full = np.array(img, dtype=np.float64)
     n, k, channels = M_full.shape
@@ -464,15 +470,26 @@ def decompress(swg_path: str, output_path: str, quiet: bool = False):
             raise ValueError(f"Invalid file: expected SWG3, got {magic}")
 
         n, k = struct.unpack("<II", f.read(8))
+        if n == 0 or k == 0 or n > 32768 or k > 32768:
+            raise ValueError(f"Invalid dimensions: {n}x{k} (max 32768x32768)")
+        if n * k > 256 * 1024 * 1024:
+            raise ValueError(f"Image too large: {n}x{k} = {n*k} pixels")
         channels = struct.unpack("<B", f.read(1))[0]
+        if channels == 0 or channels > 4:
+            raise ValueError(f"Invalid channel count: {channels}")
         layers = struct.unpack("<H", f.read(2))[0]
+        if layers > 64:
+            raise ValueError(f"Invalid layer count: {layers}")
         _target_psnr = struct.unpack("<f", f.read(4))[0]
         _max_iter = struct.unpack("<B", f.read(1))[0]
 
         log(f"Image: {n}x{k}, {channels} channels, max_layers={layers}")
 
         compressed_size = struct.unpack("<I", f.read(4))[0]
-        raw = zlib.decompress(f.read(compressed_size))
+        MAX_DECOMPRESSED = 256 * 1024 * 1024
+        raw = zlib.decompress(f.read(compressed_size), wbits=15, bufsize=MAX_DECOMPRESSED)
+        if len(raw) > MAX_DECOMPRESSED:
+            raise ValueError(f"Decompressed payload too large: {len(raw)} bytes")
 
     buf = io.BytesIO(raw)
     total_pixels = n * k

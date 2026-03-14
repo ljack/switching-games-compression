@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self'; worker-src 'self' blob:;">
 <title>SWG3 Image Viewer & Compressor</title>
 <style>
   :root {
@@ -632,15 +633,5 @@
 </main>
 
 <script type="module" src="app.js"></script>
-<script>
-  // PSNR slider display
-  const psnrSlider = document.getElementById('psnr-slider');
-  const psnrDisplay = document.getElementById('psnr-display');
-  if (psnrSlider && psnrDisplay) {
-    psnrSlider.addEventListener('input', () => {
-      psnrDisplay.textContent = psnrSlider.value;
-    });
-  }
-</script>
 </body>
 </html>
