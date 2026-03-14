@@ -1,6 +1,6 @@
 # Task 12: Security Fixes
 
-## Status: pending
+## Status: completed
 
 ## Description
 Combined security findings from Claude audit + GitHub Copilot review.
