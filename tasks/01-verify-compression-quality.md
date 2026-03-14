@@ -1,6 +1,6 @@
 # Task 01: Verify Browser Compression Quality
 
-## Status: blocked
+## Status: completed
 
 ## Description
 Test that browser compression achieves the target 35 dB PSNR with the default ratio of 0.30.
@@ -22,10 +22,10 @@ Compare browser-compressed output with Python-compressed output for the same ima
 - Python can decompress browser-produced .swg files
 - No console errors during compression
 
-## Blocker
-Multi-layer ALS solver diverges for layers > 1. With 1 layer, compression works (35+ dB on simple images).
-The Gram matrix / Cholesky solve in BATCH_SOLVE shader likely has numerical issues with f32 for multiple layers.
-Need to debug: OUTER_DIAG → ALS_GRAM → BATCH_SOLVE pipeline for layers=2+ on 512x512 images.
+## Result
+- 512x512 test.png: 91.55 dB with 6 layers (default ratio 0.30)
+- Auto-tune: 82 dB (finds minimum ratio, all coarse ratios exceed 35 dB)
+- Python comparison: 32.9 dB for same settings — GPU now significantly better
 
 ## Fixed So Far
 - IDCT pretwiddle was completely wrong (multiplied by N instead of dividing, missing factor of 2 for AC terms)

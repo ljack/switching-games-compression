@@ -299,9 +299,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>,
     b[a] = Etm[a * p.num_systems + sys];
   }
 
-  // Add regularization
+  // Add regularization proportional to diagonal magnitude
+  var max_diag = 0.0;
+  for (var d = 0u; d < p.layers; d++) {
+    max_diag = max(max_diag, abs(A[d * p.layers + d]));
+  }
+  let reg = max(max_diag * 1e-4, 1e-6);
   for (var a = 0u; a < p.layers; a++) {
-    A[a * p.layers + a] += 1e-6;
+    A[a * p.layers + a] += reg;
   }
 
   // Cholesky decomposition: A = L * L^T (in-place, lower triangle)
