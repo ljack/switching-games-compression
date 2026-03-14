@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SWG3 Image Viewer</title>
+<title>SWG3 Image Viewer & Compressor</title>
 <style>
   :root {
     --bg: #0f0f0f;
@@ -81,6 +81,38 @@
     font-size: 13px;
   }
 
+  /* ─── Tab bar ──────────────────────────────────────────────────── */
+  .tab-bar {
+    display: flex;
+    gap: 0;
+    width: 100%;
+    max-width: 800px;
+    margin-bottom: 16px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .tab-btn {
+    flex: 1;
+    padding: 10px;
+    text-align: center;
+    background: var(--surface);
+    color: var(--text-dim);
+    border: none;
+    border-right: 1px solid var(--border);
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+    border-radius: 0;
+  }
+  .tab-btn:last-child { border-right: none; }
+  .tab-btn:hover { color: var(--text); }
+  .tab-btn.active {
+    background: var(--accent-dim);
+    color: #fff;
+  }
+
   main {
     flex: 1;
     width: 100%;
@@ -142,7 +174,7 @@
     border-radius: 4px;
   }
 
-  #drop-zone {
+  #drop-zone, .drop-zone {
     width: 100%;
     max-width: 800px;
     height: 200px;
@@ -156,11 +188,11 @@
     transition: border-color 0.2s, color 0.2s;
     margin-top: 16px;
   }
-  #drop-zone.drag-over {
+  #drop-zone.drag-over, .drop-zone.drag-over {
     border-color: var(--accent);
     color: var(--text);
   }
-  #drop-zone.hidden { display: none; }
+  #drop-zone.hidden, .drop-zone.hidden { display: none; }
 
   #error-box {
     display: none;
@@ -325,6 +357,86 @@
     width: 100%;
     height: 100%;
   }
+
+  /* ─── Compress Panel ────────────────────────────────────────────── */
+  #compress-panel {
+    display: none;
+    width: 100%;
+    max-width: 800px;
+  }
+  .compress-section {
+    margin-bottom: 16px;
+  }
+  .compress-section h3 {
+    font-size: 14px;
+    font-weight: 500;
+    margin-bottom: 8px;
+    color: var(--text);
+  }
+  .param-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .param-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .param-group label {
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  .param-group input[type="range"] {
+    width: 100%;
+    accent-color: var(--accent);
+  }
+  .param-group input[type="number"] {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 13px;
+    width: 80px;
+  }
+  .param-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+  }
+  .param-row input[type="checkbox"] {
+    accent-color: var(--accent);
+  }
+  #compress-results {
+    display: none;
+    padding: 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-size: 13px;
+    margin-bottom: 12px;
+    line-height: 1.6;
+  }
+  #source-preview {
+    max-width: 100%;
+    height: auto;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    margin-top: 8px;
+  }
+  #source-info {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-top: 4px;
+  }
+  #download-swg {
+    display: none;
+    margin-top: 8px;
+    text-decoration: none;
+  }
 </style>
 </head>
 <body>
@@ -342,34 +454,108 @@
 <div id="warning-banner"></div>
 
 <main>
+  <div class="tab-bar">
+    <button class="tab-btn active" id="tab-viewer">Viewer</button>
+    <button class="tab-btn" id="tab-compress">Compress</button>
+  </div>
+
   <div id="error-box"></div>
   <div id="progress-area">
     <div id="progress-text">Initializing...</div>
     <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
   </div>
   <div id="info-panel"></div>
-  <div id="compare-bar">
-    <button id="btn-original">Load Original...</button>
-    <input type="file" id="original-input" accept="image/*" hidden>
-    <div class="mode-tabs">
-      <button class="mode-tab active" data-mode="2up">2-up</button>
-      <button class="mode-tab" data-mode="swipe">Swipe</button>
-      <button class="mode-tab" data-mode="onion">Onion Skin</button>
+
+  <!-- ─── Viewer Panel ─────────────────────────────────────────────── -->
+  <div id="viewer-panel" style="width:100%; display:flex; flex-direction:column; align-items:center;">
+    <div id="compare-bar">
+      <button id="btn-original">Load Original...</button>
+      <input type="file" id="original-input" accept="image/*" hidden>
+      <div class="mode-tabs">
+        <button class="mode-tab active" data-mode="2up">2-up</button>
+        <button class="mode-tab" data-mode="swipe">Swipe</button>
+        <button class="mode-tab" data-mode="onion">Onion Skin</button>
+      </div>
+      <div id="opacity-control">
+        <span>Opacity:</span>
+        <input type="range" id="opacity-slider" min="0" max="100" value="50">
+        <span id="opacity-value">50%</span>
+      </div>
+      <span id="compare-hint">Drop or select original image to compare</span>
     </div>
-    <div id="opacity-control">
-      <span>Opacity:</span>
-      <input type="range" id="opacity-slider" min="0" max="100" value="50">
-      <span id="opacity-value">50%</span>
+    <div id="canvas-container">
+      <canvas id="canvas" width="1" height="1"></canvas>
     </div>
-    <span id="compare-hint">Drop or select original image to compare</span>
+    <div id="compare-container"></div>
+    <div id="drop-zone">Drop .swg file here or use buttons above</div>
   </div>
-  <div id="canvas-container">
-    <canvas id="canvas" width="1" height="1"></canvas>
+
+  <!-- ─── Compress Panel ───────────────────────────────────────────── -->
+  <div id="compress-panel">
+    <div class="compress-section">
+      <h3>Source Image</h3>
+      <div class="controls">
+        <button id="btn-source">Select Image...</button>
+        <button id="btn-camera">Take Photo</button>
+      </div>
+      <input type="file" id="source-input" accept="image/*" hidden>
+      <div id="camera-area" style="display:none; margin-top:8px; width:100%; max-width:800px;">
+        <video id="camera-preview" autoplay playsinline style="width:100%; border-radius:4px; border:1px solid var(--border);"></video>
+        <div class="controls" style="margin-top:8px;">
+          <button id="btn-shutter">Capture</button>
+          <button id="btn-camera-cancel">Cancel</button>
+          <select id="camera-select" style="background:var(--surface); color:var(--text); border:1px solid var(--border); padding:4px 8px; border-radius:4px; font-size:12px;"></select>
+        </div>
+      </div>
+      <div id="source-drop-zone" class="drop-zone" style="height:150px; margin-top:8px;">
+        Drop PNG/JPEG image here
+      </div>
+      <canvas id="source-preview" style="display:none;"></canvas>
+      <div id="source-info"></div>
+    </div>
+
+    <div class="compress-section">
+      <h3>Parameters</h3>
+      <div class="param-grid">
+        <div class="param-group">
+          <label>Target PSNR: <span id="psnr-display">35</span> dB</label>
+          <input type="range" id="psnr-slider" min="20" max="50" value="35" step="1">
+        </div>
+        <div class="param-group">
+          <label>Layers</label>
+          <input type="number" id="layers-input" min="1" max="12" value="6">
+        </div>
+        <div class="param-group">
+          <label>Max Iterations</label>
+          <input type="number" id="iter-input" min="1" max="15" value="7">
+        </div>
+        <div class="param-group">
+          <div class="param-row">
+            <input type="checkbox" id="autotune-check">
+            <label for="autotune-check">Auto-tune DCT ratio</label>
+          </div>
+        </div>
+      </div>
+      <button id="btn-compress" disabled>Compress</button>
+    </div>
+
+    <div id="compress-results"></div>
+    <a id="download-swg" class="controls">
+      <button>Download .swg</button>
+    </a>
   </div>
-  <div id="compare-container"></div>
-  <div id="drop-zone">Drop .swg file here or use buttons above</div>
 </main>
 
 <script type="module" src="app.js"></script>
+<script>
+  // PSNR slider display
+  const psnrSlider = document.getElementById('psnr-slider');
+  const psnrDisplay = document.getElementById('psnr-display');
+  if (psnrSlider && psnrDisplay) {
+    psnrSlider.addEventListener('input', () => {
+      psnrDisplay.textContent = psnrSlider.value;
+    });
+  }
+</script>
 </body>
 </html>

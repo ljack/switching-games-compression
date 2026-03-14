@@ -1,5 +1,7 @@
 // gpu.js — WebGPU init, buffer management, shader pipelines, dispatch
-// Transpose-based IDCT with shared memory for cache efficiency.
+// Supports both shared-memory IDCT (fallback) and FFT-based IDCT (fast path).
+
+import { FFTEngine } from './gpu-fft.js';
 
 const WG = 256;
 const SMEM_FLOATS = 4096; // 16KB shared memory (WebGPU minimum guarantee)
@@ -50,8 +52,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>,
   output[col * p.rows_in + row] = input[idx];
 }`;
 
-// Shared-memory IDCT: one workgroup per row, loads freq chunk into shared memory.
-// Chebyshev recurrence reads from fast shared memory (~4 cycles vs ~100+ global).
 const IDCT_SHARED = /* wgsl */`
 struct P { num_rows: u32, row_len: u32, freq_start: u32, freq_end: u32 }
 @group(0) @binding(0) var<uniform> p: P;
@@ -69,7 +69,6 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>,
   let chunk_len = p.freq_end - p.freq_start;
   let base_in = row * p.row_len + p.freq_start;
 
-  // Cooperative load: all threads load chunk into shared memory
   for (var i = lid.x; i < chunk_len; i += ${WG}u) {
     sh[i] = input[base_in + i];
   }
@@ -81,20 +80,16 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>,
   let pi_val = 3.14159265358979;
   let base_out = row * p.row_len;
 
-  // Each thread computes ceil(row_len/WG) output elements
   for (var out_idx = lid.x; out_idx < p.row_len; out_idx += ${WG}u) {
     let theta = pi_val * f32(2u * out_idx + 1u) / f32(2u * N);
     let cos_theta = cos(theta);
 
-    // Initialize Chebyshev recurrence at freq_start
     var cos_prev = cos(f32(p.freq_start) * theta - theta);
     var cos_curr = cos(f32(p.freq_start) * theta);
 
-    // First frequency
     let w0 = select(alpha, alpha0, p.freq_start == 0u);
     var sum = w0 * sh[0] * cos_curr;
 
-    // Remaining via recurrence (reading from shared memory — very fast)
     for (var fi = 1u; fi < chunk_len; fi++) {
       let cos_next = 2.0 * cos_theta * cos_curr - cos_prev;
       sum += alpha * sh[fi] * cos_next;
@@ -163,9 +158,12 @@ export class GPUDecoder {
     this.device = null;
     this.adapterInfo = null;
     this.P = {};
+    this.fft = null;
     this.bufA = null; this.bufB = null;
     this.bufPacked = null; this.staging = null;
+    this.complexA = null; this.complexB = null;
     this.n = 0; this.k = 0;
+    this.useFFT = true; // Use FFT-based IDCT by default
   }
 
   async init() {
@@ -188,6 +186,14 @@ export class GPUDecoder {
       clear: mk(CLEAR), scatter: mk(SCATTER), transpose: mk(TRANSPOSE),
       idct: mk(IDCT_SHARED), matmul: mk(MATMUL), combine: mk(COMBINE), pack: mk(PACK),
     };
+
+    // Initialize FFT engine
+    try {
+      this.fft = new FFTEngine(this.device);
+    } catch (e) {
+      console.warn('FFT init failed, falling back to shared-mem IDCT:', e);
+      this.useFFT = false;
+    }
   }
 
   _upload(data, usage = GPUBufferUsage.STORAGE) {
@@ -209,17 +215,53 @@ export class GPUDecoder {
     });
   }
 
+  // Check if N is a valid FFT size (only 2^a * 3^b)
+  _isFFTCompatible(N) {
+    let n = N;
+    while (n % 2 === 0) n /= 2;
+    while (n % 3 === 0) n /= 3;
+    return n === 1;
+  }
+
   ensureBuffers(n, k) {
     if (this.n === n && this.k === k) return;
     this.bufA?.destroy(); this.bufB?.destroy();
     this.bufPacked?.destroy(); this.staging?.destroy();
+    this.complexA?.destroy(); this.complexB?.destroy();
+
     const total = n * k;
     const pLen = Math.ceil(total / 4) * 4;
-    const S = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC;
-    this.bufA = this.device.createBuffer({ size: total * 4, usage: S });
-    this.bufB = this.device.createBuffer({ size: total * 4, usage: S });
-    this.bufPacked = this.device.createBuffer({ size: pLen, usage: S });
-    this.staging = this.device.createBuffer({ size: pLen, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+    const S = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST;
+
+    try {
+      this.bufA = this.device.createBuffer({ size: total * 4, usage: S });
+      this.bufB = this.device.createBuffer({ size: total * 4, usage: S });
+      this.bufPacked = this.device.createBuffer({ size: pLen, usage: S });
+      this.staging = this.device.createBuffer({ size: pLen, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+
+      // Allocate complex buffers for FFT if using FFT path and size fits
+      const complexSize = total * 8;
+      const maxBuf = this.device.limits.maxBufferSize;
+      if (this.useFFT && this._isFFTCompatible(n) && this._isFFTCompatible(k) && complexSize <= maxBuf) {
+        this.complexA = this.device.createBuffer({ size: complexSize, usage: S });
+        this.complexB = this.device.createBuffer({ size: complexSize, usage: S });
+      } else {
+        this.complexA = null;
+        this.complexB = null;
+      }
+    } catch (e) {
+      // OOM — destroy any partially allocated buffers
+      this.bufA?.destroy(); this.bufB?.destroy();
+      this.bufPacked?.destroy(); this.staging?.destroy();
+      this.complexA?.destroy(); this.complexB?.destroy();
+      this.bufA = this.bufB = this.bufPacked = this.staging = null;
+      this.complexA = this.complexB = null;
+      this.n = 0; this.k = 0;
+      const err = new Error(`GPU_OOM: Failed to allocate buffers for ${k}x${n} image`);
+      err.oom = true;
+      throw err;
+    }
+
     this.n = n; this.k = k;
   }
 
@@ -238,27 +280,13 @@ export class GPUDecoder {
     const bR = this._upload(ch.rightDiags);
     tmp.push(bIdx, bVal, bL, bR);
 
-    // Uniforms
     const uScatter = this._uniform(new Uint32Array([ch.indices.length]));
-    const uTransNK = this._uniform(new Uint32Array([n, k]));
-    const uTransKN = this._uniform(new Uint32Array([k, n]));
     const uMatmul = this._uniform(new Uint32Array([n, k, ch.layers]));
     const uPack = this._uniform(new Uint32Array([packedLen, total]));
-    tmp.push(uScatter, uTransNK, uTransKN, uMatmul, uPack);
+    tmp.push(uScatter, uMatmul, uPack);
 
-    // IDCT chunk params (shared memory fits SMEM_FLOATS per chunk)
-    // Column IDCT: k rows of n elements (on transposed data)
-    const colChunks = [];
-    for (let fs = 0; fs < n; fs += SMEM_FLOATS) {
-      const u = this._uniform(new Uint32Array([k, n, fs, Math.min(fs + SMEM_FLOATS, n)]));
-      colChunks.push(u); tmp.push(u);
-    }
-    // Row IDCT: n rows of k elements
-    const rowChunks = [];
-    for (let fs = 0; fs < k; fs += SMEM_FLOATS) {
-      const u = this._uniform(new Uint32Array([n, k, fs, Math.min(fs + SMEM_FLOATS, k)]));
-      rowChunks.push(u); tmp.push(u);
-    }
+    const canUseFFT = this.useFFT && this.complexA && this.complexB &&
+                      this._isFFTCompatible(n) && this._isFFTCompatible(k);
 
     const enc = dev.createCommandEncoder();
     const run = (pass, pipe, bg, d_) => {
@@ -276,48 +304,81 @@ export class GPUDecoder {
       p.end();
     }
 
-    // ── 2. Transpose bufA (n×k) → bufB (k×n) ──
-    onProgress?.('transpose');
-    {
-      const p = enc.beginComputePass();
-      run(p, this.P.transpose, this._bg(this.P.transpose, [uTransNK, this.bufA, this.bufB]), d);
-      p.end();
-    }
+    if (canUseFFT) {
+      // ── FFT-based 2D IDCT ──
+      onProgress?.('fft_idct');
+      const scratchBuf = this.bufB; // reuse bufB as scratch
+      // We need a temporary output buffer since bufB is used as scratch
+      // Actually, encode2DIDCT uses: input→output, scratch, complexA, complexB
+      // bufA has scattered DCT coefficients
+      // We want result in bufA (C matrix)
+      // Use bufB as scratch, but we need another buffer for output...
+      // Let's create a temp buffer for the FFT output
+      const fftOut = dev.createBuffer({ size: total * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+      tmp.push(fftOut);
 
-    // ── 3. Column IDCT (shared mem): bufB → bufA ──
-    // bufB = k×n (k rows of n elements). One workgroup per row.
-    onProgress?.('idct_cols');
-    {
-      const p = enc.beginComputePass();
-      run(p, this.P.clear, this._bg(this.P.clear, [this.bufA]), d);
-      for (const cp of colChunks) {
-        run(p, this.P.idct, this._bg(this.P.idct, [cp, this.bufB, this.bufA]), [k, 1, 1]);
+      this.fft.encode2DIDCT(enc, n, k, this.bufA, fftOut, this.bufB, this.complexA, this.complexB, tmp);
+
+      // Copy fftOut → bufA
+      enc.copyBufferToBuffer(fftOut, 0, this.bufA, 0, total * 4);
+    } else {
+      // ── Shared-memory IDCT (fallback for non-FFT-compatible sizes) ──
+      const uTransNK = this._uniform(new Uint32Array([n, k]));
+      const uTransKN = this._uniform(new Uint32Array([k, n]));
+      tmp.push(uTransNK, uTransKN);
+
+      const colChunks = [];
+      for (let fs = 0; fs < n; fs += SMEM_FLOATS) {
+        const u = this._uniform(new Uint32Array([k, n, fs, Math.min(fs + SMEM_FLOATS, n)]));
+        colChunks.push(u); tmp.push(u);
       }
-      p.end();
-    }
-
-    // ── 4. Transpose bufA (k×n) → bufB (n×k) ──
-    onProgress?.('transpose');
-    {
-      const p = enc.beginComputePass();
-      run(p, this.P.transpose, this._bg(this.P.transpose, [uTransKN, this.bufA, this.bufB]), d);
-      p.end();
-    }
-
-    // ── 5. Row IDCT (shared mem): bufB → bufA ──
-    // bufB = n×k (n rows of k elements). One workgroup per row.
-    onProgress?.('idct_rows');
-    {
-      const p = enc.beginComputePass();
-      run(p, this.P.clear, this._bg(this.P.clear, [this.bufA]), d);
-      for (const rp of rowChunks) {
-        run(p, this.P.idct, this._bg(this.P.idct, [rp, this.bufB, this.bufA]), [n, 1, 1]);
+      const rowChunks = [];
+      for (let fs = 0; fs < k; fs += SMEM_FLOATS) {
+        const u = this._uniform(new Uint32Array([n, k, fs, Math.min(fs + SMEM_FLOATS, k)]));
+        rowChunks.push(u); tmp.push(u);
       }
-      p.end();
+
+      // Transpose bufA (n×k) → bufB (k×n)
+      onProgress?.('transpose');
+      {
+        const p = enc.beginComputePass();
+        run(p, this.P.transpose, this._bg(this.P.transpose, [uTransNK, this.bufA, this.bufB]), d);
+        p.end();
+      }
+
+      // Column IDCT: bufB → bufA
+      onProgress?.('idct_cols');
+      {
+        const p = enc.beginComputePass();
+        run(p, this.P.clear, this._bg(this.P.clear, [this.bufA]), d);
+        for (const cp of colChunks) {
+          run(p, this.P.idct, this._bg(this.P.idct, [cp, this.bufB, this.bufA]), [k, 1, 1]);
+        }
+        p.end();
+      }
+
+      // Transpose bufA (k×n) → bufB (n×k)
+      onProgress?.('transpose');
+      {
+        const p = enc.beginComputePass();
+        run(p, this.P.transpose, this._bg(this.P.transpose, [uTransKN, this.bufA, this.bufB]), d);
+        p.end();
+      }
+
+      // Row IDCT: bufB → bufA
+      onProgress?.('idct_rows');
+      {
+        const p = enc.beginComputePass();
+        run(p, this.P.clear, this._bg(this.P.clear, [this.bufA]), d);
+        for (const rp of rowChunks) {
+          run(p, this.P.idct, this._bg(this.P.idct, [rp, this.bufB, this.bufA]), [n, 1, 1]);
+        }
+        p.end();
+      }
     }
     // bufA = C
 
-    // ── 6. matmul L^T @ R → bufB ──
+    // ── matmul L^T @ R → bufB ──
     onProgress?.('matmul');
     {
       const p = enc.beginComputePass();
@@ -325,7 +386,7 @@ export class GPUDecoder {
       p.end();
     }
 
-    // ── 7. combine ──
+    // ── combine ──
     onProgress?.('combine');
     {
       const p = enc.beginComputePass();
@@ -333,7 +394,7 @@ export class GPUDecoder {
       p.end();
     }
 
-    // ── 8. pack ──
+    // ── pack ──
     onProgress?.('pack');
     {
       const p = enc.beginComputePass();
@@ -363,6 +424,7 @@ export class GPUDecoder {
   destroy() {
     this.bufA?.destroy(); this.bufB?.destroy();
     this.bufPacked?.destroy(); this.staging?.destroy();
+    this.complexA?.destroy(); this.complexB?.destroy();
     this.device?.destroy();
   }
 }
