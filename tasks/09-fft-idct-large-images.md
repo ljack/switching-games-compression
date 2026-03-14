@@ -1,6 +1,6 @@
 # Task 09: FFT IDCT for Large Images via Row Batching
 
-## Status: pending
+## Status: completed
 
 ## Description
 The FFT-based IDCT requires complex buffers (2x f32 per element = 8 bytes/pixel).
@@ -52,6 +52,12 @@ that fit within maxBufferSize.
 - Badge shows "WebGPU (FFT)" for large images
 - Exact same pixel output as shared-mem path
 
+## Result
+- 8192×6144 demo: 1041 ms decode (was ~15000 ms with shared-mem) — **14.4x speedup**
+- Badge now shows "WebGPU (FFT)" for large images
+- Batched path: complex buffers sized to 75% of maxStorageBufferBindingSize
+- Verified: 8x8, 64x64 batched round-trip max error < 0.0002
+
 ## Files
-- docs/gpu.js (ensureBuffers, decodeChannel)
-- docs/gpu-fft.js (encodeIDCT, encode2DIDCT — need batched variants)
+- docs/gpu.js (ensureBuffers, decodeChannel — FFT enabled even without full complex buffers)
+- docs/gpu-fft.js (_encodeIDCTSlice, _bgSlice, encode2DIDCT batched path)

@@ -768,7 +768,8 @@ async function decodeAndRender(arrayBuffer, fileName) {
   const compSize = arrayBuffer.byteLength;
   const rawSize = decK * decN * 3;
   const ratio = (compSize / rawSize * 100).toFixed(1);
-  const usedFFT = useGPU && !gpuFailed && gpuDecoder.complexA != null;
+  const usedFFT = useGPU && !gpuFailed && gpuDecoder.useFFT &&
+    gpuDecoder._isFFTCompatible(decN) && gpuDecoder._isFFTCompatible(decK);
   const method = useGPU && !gpuFailed ? (usedFFT ? 'WebGPU (FFT)' : 'WebGPU') : 'CPU Workers';
   setInfo([
     `${decK} x ${decN}${halfRes ? ' (half res)' : ''}`,

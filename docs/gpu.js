@@ -239,12 +239,18 @@ export class GPUDecoder {
       this.bufPacked = this.device.createBuffer({ size: pLen, usage: S });
       this.staging = this.device.createBuffer({ size: pLen, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
 
-      // Allocate complex buffers for FFT if using FFT path and size fits
+      // Try to allocate complex buffers for FFT unbatched path (if they fit)
+      // If they don't fit, the FFT batched path will create smaller buffers on-the-fly
       const complexSize = total * 8;
       const maxBuf = this.device.limits.maxBufferSize;
       if (this.useFFT && this._isFFTCompatible(n) && this._isFFTCompatible(k) && complexSize <= maxBuf) {
-        this.complexA = this.device.createBuffer({ size: complexSize, usage: S });
-        this.complexB = this.device.createBuffer({ size: complexSize, usage: S });
+        try {
+          this.complexA = this.device.createBuffer({ size: complexSize, usage: S });
+          this.complexB = this.device.createBuffer({ size: complexSize, usage: S });
+        } catch {
+          this.complexA = null;
+          this.complexB = null;
+        }
       } else {
         this.complexA = null;
         this.complexB = null;
@@ -285,8 +291,7 @@ export class GPUDecoder {
     const uPack = this._uniform(new Uint32Array([packedLen, total]));
     tmp.push(uScatter, uMatmul, uPack);
 
-    const canUseFFT = this.useFFT && this.complexA && this.complexB &&
-                      this._isFFTCompatible(n) && this._isFFTCompatible(k);
+    const canUseFFT = this.useFFT && this._isFFTCompatible(n) && this._isFFTCompatible(k);
 
     const enc = dev.createCommandEncoder();
     const run = (pass, pipe, bg, d_) => {

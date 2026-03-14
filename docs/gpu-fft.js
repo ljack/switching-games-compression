@@ -464,24 +464,117 @@ export class FFTEngine {
     p.end();
   }
 
+  // Bind group helper with buffer offset/size for slicing into large buffers
+  _bgSlice(pipeline, entries) {
+    return this.device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: entries.map((e, i) => {
+        if (e.offset !== undefined) {
+          return { binding: i, resource: { buffer: e.buffer, offset: e.offset, size: e.size } };
+        }
+        return { binding: i, resource: { buffer: e } };
+      })
+    });
+  }
+
+  // IDCT of a batch of rows, reading from inputBuf at byteOffset and writing to outputBuf at byteOffset.
+  // complexA/complexB must be at least batchRows * N * 8 bytes.
+  _encodeIDCTSlice(enc, batchRows, N, inputBuf, inputOffset, outputBuf, outputOffset, complexA, complexB, tmpUniforms) {
+    const total = batchRows * N;
+    const realBytes = total * 4;
+
+    // 1. Pre-twiddle: read f32 slice → complexA
+    const uPre = this._uniform(new Uint32Array([batchRows, N]));
+    tmpUniforms.push(uPre);
+    {
+      const p = enc.beginComputePass();
+      p.setPipeline(this.pipelines.idctPreTwiddle);
+      p.setBindGroup(0, this._bgSlice(this.pipelines.idctPreTwiddle, [
+        uPre,
+        { buffer: inputBuf, offset: inputOffset, size: realBytes },
+        complexA,
+      ]));
+      p.dispatchWorkgroups(...dims(total));
+      p.end();
+    }
+
+    // 2. IFFT
+    const resultBuf = this._encodeFFTStages(enc, batchRows, N, complexA, complexB, -1.0, tmpUniforms);
+
+    // 3. De-reorder: complex → f32 slice
+    const uPost = this._uniform(new Uint32Array([batchRows, N]));
+    tmpUniforms.push(uPost);
+    {
+      const p = enc.beginComputePass();
+      p.setPipeline(this.pipelines.idctDeorder);
+      p.setBindGroup(0, this._bgSlice(this.pipelines.idctDeorder, [
+        uPost,
+        resultBuf,
+        { buffer: outputBuf, offset: outputOffset, size: realBytes },
+      ]));
+      p.dispatchWorkgroups(...dims(total));
+      p.end();
+    }
+  }
+
   // Full 2D IDCT: separable row + column IDCT via transpose
   // input: f32 buffer n×k (row-major DCT coefficients)
   // output: f32 buffer n×k (row-major spatial values)
-  // Needs: bufA, bufB (f32, n*k each), complexA, complexB (vec2<f32>, max(n,k)*batch each)
+  // complexA, complexB: if provided and large enough, use directly (unbatched).
+  //   Otherwise, allocates smaller batch-sized complex buffers internally.
   encode2DIDCT(enc, n, k, inputBuf, outputBuf, scratchBuf, complexA, complexB, tmpUniforms) {
+    const total = n * k;
+    const fullComplexSize = total * 8;
+    const maxBuf = this.device.limits.maxBufferSize;
+
+    // Check if complex buffers are provided and big enough for unbatched path
+    const canUnbatched = complexA && complexB &&
+      complexA.size >= fullComplexSize && complexB.size >= fullComplexSize;
+
+    if (canUnbatched) {
+      // ── Unbatched path (original) ──
+      this.encodeTranspose(enc, n, k, inputBuf, scratchBuf, tmpUniforms);
+      this.encodeIDCT(enc, k, n, scratchBuf, outputBuf, complexA, complexB, tmpUniforms);
+      this.encodeTranspose(enc, k, n, outputBuf, scratchBuf, tmpUniforms);
+      this.encodeIDCT(enc, n, k, scratchBuf, outputBuf, complexA, complexB, tmpUniforms);
+      return;
+    }
+
+    // ── Batched path: process rows in chunks that fit in GPU limits ──
+    const maxDim = Math.max(n, k);
+    // Complex buffers must fit both maxBufferSize and maxStorageBufferBindingSize
+    const maxBinding = this.device.limits.maxStorageBufferBindingSize || maxBuf;
+    const effectiveMax = Math.min(maxBuf, maxBinding);
+    // Each batch needs complex buffers of batchRows * maxDim * 8 bytes
+    // Leave some headroom (use 75% of effective max)
+    const batchRows = Math.max(1, Math.floor((effectiveMax * 0.75) / (maxDim * 8)));
+    const batchComplexSize = batchRows * maxDim * 8;
+
+    const S = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST;
+    const batchCA = this.device.createBuffer({ size: batchComplexSize, usage: S });
+    const batchCB = this.device.createBuffer({ size: batchComplexSize, usage: S });
+    tmpUniforms.push(batchCA, batchCB); // cleaned up with other temps
+
     // Step 1: Column IDCT via transpose
     // Transpose input (n×k) → scratchBuf (k×n)
     this.encodeTranspose(enc, n, k, inputBuf, scratchBuf, tmpUniforms);
 
-    // IDCT rows of scratchBuf (k rows of n elements) → outputBuf
-    this.encodeIDCT(enc, k, n, scratchBuf, outputBuf, complexA, complexB, tmpUniforms);
+    // IDCT of k rows of length n, in batches → outputBuf (k×n layout)
+    for (let startRow = 0; startRow < k; startRow += batchRows) {
+      const rows = Math.min(batchRows, k - startRow);
+      const byteOff = startRow * n * 4;
+      this._encodeIDCTSlice(enc, rows, n, scratchBuf, byteOff, outputBuf, byteOff, batchCA, batchCB, tmpUniforms);
+    }
 
     // Transpose outputBuf (k×n) → scratchBuf (n×k)
     this.encodeTranspose(enc, k, n, outputBuf, scratchBuf, tmpUniforms);
 
-    // Step 2: Row IDCT
-    // IDCT rows of scratchBuf (n rows of k elements) → outputBuf
-    this.encodeIDCT(enc, n, k, scratchBuf, outputBuf, complexA, complexB, tmpUniforms);
+    // Step 2: Row IDCT of n rows of length k, in batches → outputBuf (n×k layout)
+    for (let startRow = 0; startRow < n; startRow += batchRows) {
+      const rows = Math.min(batchRows, n - startRow);
+      const byteOff = startRow * k * 4;
+      this._encodeIDCTSlice(enc, rows, k, scratchBuf, byteOff, outputBuf, byteOff, batchCA, batchCB, tmpUniforms);
+    }
   }
 
   // Full 2D DCT: separable row + column DCT via transpose
